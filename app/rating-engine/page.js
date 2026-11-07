@@ -570,7 +570,7 @@ function RatingEngineContent() {
                         {h.reason || "—"}
                       </td>
                       <td className="px-4 py-3 text-right whitespace-nowrap">
-                        {isHandicapper && !isConfirmed ? (
+                        {isHandicapper && !isConfirmed && !h.override ? (
                           <button
                             type="button"
                             onClick={(e) => {
@@ -581,6 +581,8 @@ function RatingEngineContent() {
                           >
                             Override
                           </button>
+                        ) : h.override ? (
+                          <span className="text-xs text-slate-400">—</span>
                         ) : isConfirmed ? (
                           <span className="text-xs text-slate-400 italic">Locked</span>
                         ) : null}
