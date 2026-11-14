@@ -297,26 +297,8 @@ function AuditContent() {
             </div>
           </div>
 
-          {/* Action Row: Toggle + Buttons */}
-          <div className="flex flex-wrap items-center justify-between gap-4 pt-2 border-t border-[#F1F5F9]">
-            {/* Disabled Toggle: "Show all assessments" with tooltip */}
-            <div
-              className="flex items-center gap-2.5 opacity-60 cursor-not-allowed group relative"
-              title="Available in the full release"
-            >
-              {/* Fake Toggle Switch */}
-              <div className="w-9 h-5 bg-slate-300 rounded-full p-0.5 transition-colors">
-                <div className="w-4 h-4 bg-white rounded-full shadow-xs" />
-              </div>
-              <span className="text-xs font-medium text-slate-600 select-none">
-                Show all assessments
-              </span>
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-500 border border-slate-200">
-                <Info className="w-3 h-3" />
-                Available in the full release
-              </span>
-            </div>
-
+          {/* Action Row: Buttons */}
+          <div className="flex flex-wrap items-center justify-end gap-3 pt-2 border-t border-[#F1F5F9]">
             {/* Filter buttons */}
             <div className="flex items-center gap-3">
               <button

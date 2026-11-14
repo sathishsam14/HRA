@@ -1,6 +1,6 @@
 "use client";
 
-import React, { Suspense, useState, useRef, useMemo } from "react";
+import React, { Suspense, useState, useRef, useMemo, useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import ProtectedPage from "@/components/ProtectedPage";
 import AppShell from "@/components/AppShell";
@@ -20,6 +20,7 @@ import {
   Layers,
   ChevronDown,
   Upload,
+  RotateCcw,
 } from "lucide-react";
 
 function getOrdinal(n) {
@@ -38,8 +39,10 @@ function RatingEngineContent() {
     horses,
     filesByRace,
     confirmedRaces,
+    confirmedHorses,
     saveOverride,
     confirmRace,
+    confirmHorses,
     updateFileStatus,
     removeFileStatus,
   } = useData();
@@ -48,11 +51,26 @@ function RatingEngineContent() {
   const isHandicapper = user?.role === "Handicapper";
 
   const [selectedRaceId, setSelectedRaceId] = useState(initialRaceId);
+  const [selectedRaceType, setSelectedRaceType] = useState("ALL");
   const [selectedHorseId, setSelectedHorseId] = useState(null);
+  const [checkedHorseIds, setCheckedHorseIds] = useState(new Set());
   const [overrideModalHorse, setOverrideModalHorse] = useState(null);
   const [toastMessage, setToastMessage] = useState("");
   const fileInputRef = useRef(null);
   const [targetUploadIdx, setTargetUploadIdx] = useState(null);
+
+  // Clear checked horse IDs when switching races
+  useEffect(() => {
+    setCheckedHorseIds(new Set());
+  }, [selectedRaceId]);
+
+  // Filter races by type (Handicap, Terms, ALL)
+  const filteredRaces = useMemo(() => {
+    return races.filter((r) => {
+      if (selectedRaceType !== "ALL" && r.type !== selectedRaceType) return false;
+      return true;
+    });
+  }, [races, selectedRaceType]);
 
   // Selected race object
   const currentRace = useMemo(() => {
@@ -94,7 +112,81 @@ function RatingEngineContent() {
     { name: "Incident report", status: "Not uploaded", detail: "" },
   ];
 
-  const isConfirmed = currentRace.status === "Reviewed" || confirmedRaces.includes(currentRace.id);
+  // Confirmation helpers (only confirmed horses are locked; NO unlock allowed!)
+  const isHorseConfirmed = (horseId) => {
+    return !!confirmedHorses?.[horseId];
+  };
+
+  const unconfirmedHorses = useMemo(() => {
+    return currentHorses.filter((h) => !confirmedHorses?.[h.id]);
+  }, [currentHorses, confirmedHorses]);
+
+  const allHorsesConfirmed =
+    currentHorses.length > 0 && currentHorses.every((h) => isHorseConfirmed(h.id));
+  const someHorsesConfirmed = currentHorses.some((h) => isHorseConfirmed(h.id));
+  const confirmedHorsesCount = currentHorses.filter((h) => isHorseConfirmed(h.id)).length;
+  const isConfirmed = allHorsesConfirmed || currentRace.status === "Reviewed";
+
+  // Checkbox selection helpers
+  const isAllUnconfirmedChecked =
+    unconfirmedHorses.length > 0 &&
+    unconfirmedHorses.every((h) => checkedHorseIds.has(h.id));
+
+  // Toggle check all unconfirmed horses
+  const handleToggleSelectAll = () => {
+    if (!isHandicapper || unconfirmedHorses.length === 0) return;
+    if (isAllUnconfirmedChecked) {
+      setCheckedHorseIds(new Set());
+    } else {
+      const next = new Set();
+      unconfirmedHorses.forEach((h) => next.add(h.id));
+      setCheckedHorseIds(next);
+    }
+  };
+
+  // Toggle single horse checkbox
+  const handleToggleHorseCheck = (horseId) => {
+    if (!isHandicapper || isHorseConfirmed(horseId)) return;
+    setCheckedHorseIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(horseId)) {
+        next.delete(horseId);
+      } else {
+        next.add(horseId);
+      }
+      return next;
+    });
+  };
+
+  // Target horse IDs to confirm: checked horses, or currently clicked single active horse
+  const targetsToConfirm = useMemo(() => {
+    if (checkedHorseIds.size > 0) {
+      return Array.from(checkedHorseIds);
+    }
+    if (activeHorse && !confirmedHorses?.[activeHorse.id]) {
+      return [activeHorse.id];
+    }
+    return [];
+  }, [checkedHorseIds, activeHorse, confirmedHorses]);
+
+  // Execute confirm for targeted horses (NO UNLOCK!)
+  const handleConfirmReview = () => {
+    if (!isHandicapper || targetsToConfirm.length === 0) return;
+
+    const willBeAllConfirmed =
+      confirmedHorsesCount + targetsToConfirm.length >= currentHorses.length;
+
+    confirmHorses(currentRace.id, targetsToConfirm, willBeAllConfirmed);
+    setCheckedHorseIds(new Set());
+
+    if (targetsToConfirm.length === 1) {
+      const hObj = currentHorses.find((h) => h.id === targetsToConfirm[0]);
+      setToastMessage(`Confirmed and locked ${hObj?.horseName || "horse"}`);
+    } else {
+      setToastMessage(`Confirmed and locked ${targetsToConfirm.length} horses`);
+    }
+    setTimeout(() => setToastMessage(""), 4000);
+  };
 
   // Counts for sticky bottom bar
   const overriddenCount = currentHorses.filter((h) => h.override).length;
@@ -133,17 +225,7 @@ function RatingEngineContent() {
     router.replace(`/rating-engine/?race=${newRaceId}`);
   };
 
-  // Confirm race review
-  const handleConfirmReview = () => {
-    if (!isHandicapper) return;
-    if (
-      window.confirm(
-        `Confirm review for Race #${currentRace.raceNo}? Ratings will be finalised and locked.`
-      )
-    ) {
-      confirmRace(currentRace.id);
-    }
-  };
+
 
   // Why this rating explanation sentence
   const whySentence = useMemo(() => {
@@ -315,21 +397,51 @@ function RatingEngineContent() {
       <div className="bg-white rounded-xl border border-[#E2E8F0] shadow-[0_1px_2px_rgba(15,23,42,0.06)] p-6">
         {/* Top Dropdown row */}
         <div className="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-[#EEF2F6]">
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             {/* Date dropdown */}
             <div className="relative">
               <select
                 value={currentRace.date || "2026-11-07"}
                 onChange={(e) => {
                   const targetDate = e.target.value;
-                  const firstRaceOnDate = races.find((r) => r.date === targetDate);
-                  if (firstRaceOnDate) handleSelectRace(firstRaceOnDate.id);
+                  const matching = races.filter(
+                    (r) =>
+                      r.date === targetDate &&
+                      (selectedRaceType === "ALL" || r.type === selectedRaceType)
+                  );
+                  if (matching.length > 0) {
+                    handleSelectRace(matching[0].id);
+                  } else {
+                    const anyOnDate = races.find((r) => r.date === targetDate);
+                    if (anyOnDate) handleSelectRace(anyOnDate.id);
+                  }
                 }}
                 className="appearance-none h-10 pl-3.5 pr-8 bg-white border border-[#CBD5E1] rounded-lg text-xs font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#2563EB] cursor-pointer"
               >
                 <option value="2026-11-07">07 Nov 2026</option>
                 <option value="2026-11-06">06 Nov 2026</option>
                 <option value="2026-11-05">05 Nov 2026</option>
+              </select>
+              <ChevronDown className="w-4 h-4 text-slate-400 absolute right-2.5 top-3 pointer-events-none" />
+            </div>
+
+            {/* Race Type dropdown: Handicap and Terms */}
+            <div className="relative">
+              <select
+                value={selectedRaceType}
+                onChange={(e) => {
+                  const newType = e.target.value;
+                  setSelectedRaceType(newType);
+                  const matching = races.filter((r) => newType === "ALL" || r.type === newType);
+                  if (matching.length > 0 && !matching.some((r) => r.id === currentRace.id)) {
+                    handleSelectRace(matching[0].id);
+                  }
+                }}
+                className="appearance-none h-10 pl-3.5 pr-8 bg-white border border-[#CBD5E1] rounded-lg text-xs font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#2563EB] cursor-pointer"
+              >
+                <option value="ALL">All Race Types</option>
+                <option value="Handicap">Handicap</option>
+                <option value="Terms">Terms</option>
               </select>
               <ChevronDown className="w-4 h-4 text-slate-400 absolute right-2.5 top-3 pointer-events-none" />
             </div>
@@ -341,9 +453,9 @@ function RatingEngineContent() {
                 onChange={(e) => handleSelectRace(e.target.value)}
                 className="appearance-none h-10 pl-3.5 pr-8 bg-white border border-[#CBD5E1] rounded-lg text-xs font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#2563EB] cursor-pointer"
               >
-                {races.map((r) => (
+                {filteredRaces.map((r) => (
                   <option key={r.id} value={r.id}>
-                    Race {r.raceNo ?? r.id}
+                    Race {r.raceNo ?? r.id} ({r.type || "Handicap"})
                   </option>
                 ))}
               </select>
@@ -352,15 +464,15 @@ function RatingEngineContent() {
           </div>
 
           <div>
-            {isConfirmed ? (
+            {allHorsesConfirmed ? (
               <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-[#DCFCE7] text-[#166534] border border-[#BBF7D0]">
                 <span className="w-1.5 h-1.5 rounded-full bg-[#166534]" />
                 Reviewed
               </span>
-            ) : currentRace.status === "Partly reviewed" ? (
+            ) : someHorsesConfirmed || currentRace.status === "Partly reviewed" ? (
               <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-[#F1F5F9] text-[#475569] border border-[#E2E8F0]">
                 <span className="w-1.5 h-1.5 rounded-full bg-[#64748B]" />
-                Partly reviewed
+                Partly reviewed ({confirmedHorsesCount}/{currentHorses.length})
               </span>
             ) : (
               <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-[#FEF3C7] text-[#92400E] border border-[#FDE68A]">
@@ -455,6 +567,26 @@ function RatingEngineContent() {
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-[#F1F5F9] border-b border-[#E2E8F0] h-[44px]">
+                <th className="px-3 py-3 text-center w-[75px]">
+                  <div
+                    className="flex items-center justify-center gap-1 cursor-pointer select-none"
+                    title={
+                      isAllUnconfirmedChecked
+                        ? "Deselect all unconfirmed"
+                        : "Select all unconfirmed horses to confirm"
+                    }
+                    onClick={handleToggleSelectAll}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isAllUnconfirmedChecked && unconfirmedHorses.length > 0}
+                      onChange={handleToggleSelectAll}
+                      disabled={!isHandicapper || unconfirmedHorses.length === 0}
+                      className="w-4 h-4 text-[#2563EB] rounded border-slate-300 focus:ring-[#2563EB] cursor-pointer disabled:cursor-not-allowed"
+                    />
+                    <span className="text-[11px] font-semibold text-[#475569] uppercase">ALL</span>
+                  </div>
+                </th>
                 <th className="px-4 py-3 text-[12px] font-medium uppercase tracking-wider text-[#475569]">
                   HORSE
                 </th>
@@ -493,7 +625,7 @@ function RatingEngineContent() {
             <tbody className="divide-y divide-[#EEF2F6]">
               {currentHorses.length === 0 ? (
                 <tr>
-                  <td colSpan={11} className="px-5 py-8 text-center text-xs text-slate-400">
+                  <td colSpan={12} className="px-5 py-8 text-center text-xs text-slate-400">
                     No horse data found for this race
                   </td>
                 </tr>
@@ -503,6 +635,7 @@ function RatingEngineContent() {
                   const changeNum = Number(h.finalChange ?? 0);
                   const isPositive = changeNum > 0;
                   const isNegative = changeNum < 0;
+                  const horseConfirmed = isHorseConfirmed(h.id);
 
                   return (
                     <tr
@@ -514,6 +647,30 @@ function RatingEngineContent() {
                           : "hover:bg-[#F8FAFC]"
                       }`}
                     >
+                      <td
+                        className="px-3 py-3 text-center"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {horseConfirmed ? (
+                          <div
+                            className="flex items-center justify-center"
+                            title="Confirmed and locked"
+                          >
+                            <span className="w-5 h-5 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center text-[10px] font-bold">
+                              ✓
+                            </span>
+                          </div>
+                        ) : (
+                          <input
+                            type="checkbox"
+                            checked={checkedHorseIds.has(h.id)}
+                            onChange={() => handleToggleHorseCheck(h.id)}
+                            disabled={!isHandicapper}
+                            className="w-4 h-4 text-[#2563EB] rounded border-slate-300 focus:ring-[#2563EB] cursor-pointer"
+                            title={`Select ${h.horseName} to confirm`}
+                          />
+                        )}
+                      </td>
                       <td className="px-4 py-3 text-sm font-semibold text-slate-900 whitespace-nowrap">
                         <span className={isSelected ? "text-[#2563EB]" : ""}>
                           {h.horseName}
@@ -570,7 +727,11 @@ function RatingEngineContent() {
                         {h.reason || "—"}
                       </td>
                       <td className="px-4 py-3 text-right whitespace-nowrap">
-                        {isHandicapper && !isConfirmed && !h.override ? (
+                        {horseConfirmed ? (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded text-[11px] font-semibold bg-[#DCFCE7] text-[#166534] border border-[#BBF7D0]">
+                            <CheckCircle2 className="w-3.5 h-3.5 text-[#166534]" /> Confirmed
+                          </span>
+                        ) : isHandicapper && !h.override ? (
                           <button
                             type="button"
                             onClick={(e) => {
@@ -583,8 +744,6 @@ function RatingEngineContent() {
                           </button>
                         ) : h.override ? (
                           <span className="text-xs text-slate-400">—</span>
-                        ) : isConfirmed ? (
-                          <span className="text-xs text-slate-400 italic">Locked</span>
                         ) : null}
                       </td>
                     </tr>
@@ -681,26 +840,44 @@ function RatingEngineContent() {
 
       {/* 5. Sticky Bottom Bar */}
       <div className="fixed bottom-0 left-[240px] right-0 bg-white/95 backdrop-blur-sm border-t border-[#E2E8F0] px-8 py-3.5 flex items-center justify-between z-30 shadow-md">
-        <div className="text-xs font-semibold text-slate-700">
+        <div className="text-xs font-semibold text-slate-700 flex items-center gap-2">
           <span>{overriddenCount} horses overridden</span>
-          <span className="mx-2 text-slate-300">·</span>
+          <span className="text-slate-300">·</span>
           <span>{keptCount} recommendations kept</span>
+          <span className="text-slate-300">·</span>
+          <span className="text-[#2563EB]">
+            {confirmedHorsesCount} of {currentHorses.length} confirmed
+          </span>
         </div>
 
         {isHandicapper && (
-          <button
-            type="button"
-            onClick={handleConfirmReview}
-            disabled={isConfirmed}
-            className={`h-10 px-5 text-xs font-semibold rounded-lg shadow-sm transition-colors flex items-center gap-2 cursor-pointer ${
-              isConfirmed
-                ? "bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed"
-                : "bg-[#2563EB] hover:bg-[#1D4ED8] text-white"
-            }`}
-          >
-            <CheckCircle2 className="w-4 h-4" />
-            <span>{isConfirmed ? "Review Finalised" : "Confirm review"}</span>
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={handleConfirmReview}
+              disabled={allHorsesConfirmed || targetsToConfirm.length === 0}
+              className={`h-10 px-5 text-xs font-semibold rounded-lg shadow-sm transition-colors flex items-center gap-2 cursor-pointer ${
+                allHorsesConfirmed || targetsToConfirm.length === 0
+                  ? "bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed"
+                  : allHorsesConfirmed || confirmedHorsesCount + targetsToConfirm.length >= currentHorses.length
+                  ? "bg-emerald-600 hover:bg-emerald-700 text-white"
+                  : "bg-[#2563EB] hover:bg-[#1D4ED8] text-white"
+              }`}
+            >
+              <CheckCircle2 className="w-4 h-4" />
+              <span>
+                {allHorsesConfirmed
+                  ? "All horses confirmed"
+                  : checkedHorseIds.size > 1
+                  ? `Confirm review (${checkedHorseIds.size} horses)`
+                  : checkedHorseIds.size === 1
+                  ? "Confirm review (1 horse)"
+                  : activeHorse && !isHorseConfirmed(activeHorse.id)
+                  ? `Confirm review (${activeHorse.horseName})`
+                  : "Confirm review"}
+              </span>
+            </button>
+          </div>
         )}
       </div>
 
