@@ -1,0 +1,240 @@
+// prisma/schema.prisma
+// HRA (Horse Rating Automation) Database Schema
+// PostgreSQL via Postgres.app / Server PostgreSQL
+// Rule: Use onDelete Restrict on every relation. Never use -999 for unrated.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
+enum Role {
+  ADMIN
+  HANDICAPPER
+  VIEWER
+}
+
+enum RaceType {
+  TERMS
+  HANDICAP
+}
+
+enum RaceStatus {
+  OPEN
+  REVIEWED
+}
+
+enum RatingStatus {
+  RATED
+  UNCHANGED
+  NOT_ELIGIBLE
+  NOT_RATED
+  NEEDS_HANDICAPPER
+}
+
+enum KeywordType {
+  STARTER
+  VETERINARY
+  INCIDENT
+  CONSTANT
+}
+
+// ─── Models ──────────────────────────────────────────────────────────────────
+
+model User {
+  id           Int           @id @default(autoincrement())
+  email        String        @unique
+  name         String
+  passwordHash String
+  role         Role
+  active       Boolean       @default(true)
+  failedLogins Int           @default(0)
+  lockedUntil  DateTime?
+  createdAt    DateTime      @default(now())
+
+  decisions     Decision[]
+  auditLogs     AuditLog[]
+  uploadedFiles UploadedFile[]
+}
+
+model Horse {
+  id            Int          @id @default(autoincrement())
+  horseId       String       @unique // e.g. "HRS-000001"
+  name          String
+  sexCategory   String?      // C&G or F&M
+  previousRuns  Int          @default(0)
+  currentRating Int?         // null means unrated, never -999
+  trainer       String?
+  active        Boolean      @default(true)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  entries       RaceEntry[]
+  runs          HorseRun[]
+}
+
+model Race {
+  id        Int         @id @default(autoincrement())
+  venue     String
+  raceDate  DateTime    @db.Date
+  season    String?
+  category  String
+  raceNo    Int
+  cardNo    Int?
+  distance  Int
+  raceType  RaceType?   // null when category is unknown
+  status    RaceStatus  @default(OPEN)
+
+  entries   RaceEntry[]
+
+  @@unique([venue, raceDate, raceNo])
+}
+
+model RaceEntry {
+  id               Int       @id @default(autoincrement())
+  raceId           Int
+  horseId          Int
+  horseWeight      Float?
+  shoes            String?
+  startGate        Int?
+  weightDeclare    Float?
+  weightCarried    Float?
+  jockey           String?
+  placing          Int?
+  timing           String?
+  verdict          String?
+  trainer          String?
+  penetrometer     Float?
+  railing          String?
+  starterRemark    String?
+  veterinaryRemark String?
+  incidentRemark   String?
+
+  race     Race      @relation(fields: [raceId], references: [id], onDelete: Restrict)
+  horse    Horse     @relation(fields: [horseId], references: [id], onDelete: Restrict)
+  rating   Rating?
+  decision Decision?
+
+  @@unique([raceId, horseId])
+}
+
+model Rating {
+  id                Int          @id @default(autoincrement())
+  entryId           Int          @unique
+  status            RatingStatus
+  recommendedChange Int?
+  recommendedRating Int?
+  reasons           Json
+  createdAt         DateTime     @default(now())
+
+  entry RaceEntry @relation(fields: [entryId], references: [id], onDelete: Restrict)
+}
+
+model Decision {
+  id             Int       @id @default(autoincrement())
+  entryId        Int       @unique
+  finalChange    Int
+  finalRating    Int
+  overridden     Boolean   @default(false)
+  overrideReason String?
+  userId         Int
+  decidedAt      DateTime  @default(now())
+
+  entry RaceEntry @relation(fields: [entryId], references: [id], onDelete: Restrict)
+  user  User      @relation(fields: [userId], references: [id], onDelete: Restrict)
+}
+
+model AuditLog {
+  id       Int      @id @default(autoincrement())
+  at       DateTime @default(now())
+  userId   Int?
+  action   String
+  entity   String
+  entityId String
+  before   Json?
+  after    Json?
+  reason   String?
+
+  user User? @relation(fields: [userId], references: [id], onDelete: Restrict)
+}
+
+model UploadedFile {
+  id         Int      @id @default(autoincrement())
+  name       String
+  size       Int
+  hash       String
+  fileType   String
+  status     String
+  errorText  String?
+  uploadedBy Int?
+  uploadedAt DateTime @default(now())
+
+  user User? @relation(fields: [uploadedBy], references: [id], onDelete: Restrict)
+
+  @@unique([name, size, hash])
+}
+
+model Coefficient {
+  id           Int      @id @default(autoincrement())
+  category     String
+  distance     Int
+  weight       Float?   @default(0)
+  time         Float?   @default(0)
+  length       Float?   @default(0)
+  penetrometer Float?   @default(0)
+  pTime        Float?
+  pLength      Float?
+  pPene        Float?
+  overall      Float?
+  ratingChange Float?
+
+  @@unique([category, distance])
+}
+
+model ExceptionKeyword {
+  id     Int         @id @default(autoincrement())
+  type   KeywordType
+  text   String
+  active Boolean     @default(true)
+
+  @@unique([type, text])
+}
+
+model RuleVersion {
+  id        Int      @id @default(autoincrement())
+  name      String
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+}
+
+model HorseRun {
+  id            Int      @id @default(autoincrement())
+  horsePk       Int      @map("horse_pk")
+  runDate       DateTime @map("run_date") @db.Date
+  raceRef       String   @map("race_ref")
+  category      String?
+  distance      Int?
+  weightCarried String?  @map("weight_carried")
+  equipment     String?
+  jockey        String?
+  horseWeight   Float?   @map("horse_weight")
+  ratingText    String?  @map("rating_text")
+  timeText      String?  @map("time_text")
+  penetrometer  Float?
+  shoes         String?
+  source        String?
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  horse         Horse    @relation(fields: [horsePk], references: [id], onDelete: Restrict)
+
+  @@unique([horsePk, runDate, raceRef], name: "horseRunUnique")
+  @@index([horsePk])
+  @@index([runDate])
+  @@map("horse_run")
+}

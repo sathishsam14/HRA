@@ -16,16 +16,23 @@ export default function LoginPage() {
   const [submitting, setSubmitting] = useState(false);
   const [bgImageError, setBgImageError] = useState(false);
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e?.preventDefault();
+    if (submitting) return;
+
     setError("");
     setSubmitting(true);
 
-    const res = login(username, password);
-    if (res.success) {
-      router.push("/dashboard");
-    } else {
-      setError(res.error || "Wrong credentials. Please try again.");
+    try {
+      const res = await login(username, password);
+      if (res.success) {
+        router.push("/dashboard");
+      } else {
+        setError(res.error || "Invalid email or password");
+      }
+    } catch {
+      setError("An unexpected error occurred. Please try again.");
+    } finally {
       setSubmitting(false);
     }
   };
@@ -68,10 +75,11 @@ export default function LoginPage() {
         </div>
       </div>
 
-      {/* Right Half: BTC Logo, Sign-in Card, Demo Accounts, and Footer */}
+      {/* Right Half: BTC Logo, Sign-in Card, and Footer */}
       <div className="lg:w-1/2 flex flex-col justify-between items-center min-h-screen py-10 px-6 sm:px-12 bg-[#F8FAFC]">
         {/* Top: BTC Logo */}
         <div className="flex flex-col items-center pt-2">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src="/logo.png"
             alt="Bangalore Turf Club"
@@ -93,18 +101,18 @@ export default function LoginPage() {
                 Sign in
               </h2>
               <p className="text-xs text-slate-500 mt-1">
-                Use the username given by your Admin
+                Enter your credentials to access the system
               </p>
             </div>
 
             <form onSubmit={handleSubmit} className="space-y-4">
-              {/* Username Input */}
+              {/* Username / Email Input */}
               <div>
                 <label
                   htmlFor="username"
                   className="block text-xs font-medium text-slate-700 mb-1.5"
                 >
-                  Username
+                  Email or Username
                 </label>
                 <div className="relative">
                   <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
@@ -120,7 +128,7 @@ export default function LoginPage() {
                       setUsername(e.target.value);
                       if (error) setError("");
                     }}
-                    placeholder="Username"
+                    placeholder="e.g. admin@btc.com or admin"
                     className="w-full h-10 pl-9 pr-3 text-xs border border-[#CBD5E1] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#2563EB] focus:border-transparent bg-white text-slate-900"
                   />
                 </div>
@@ -148,7 +156,7 @@ export default function LoginPage() {
                       setPassword(e.target.value);
                       if (error) setError("");
                     }}
-                    placeholder="Password"
+                    placeholder="Enter password"
                     className="w-full h-10 pl-9 pr-10 text-xs border border-[#CBD5E1] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#2563EB] focus:border-transparent bg-white text-slate-900"
                   />
                   <button
@@ -166,7 +174,7 @@ export default function LoginPage() {
                 </div>
               </div>
 
-              {/* Inline Red Error Message */}
+              {/* Inline Error Message */}
               {error && (
                 <div className="flex items-center gap-2 p-2.5 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs">
                   <AlertCircle className="w-4 h-4 flex-shrink-0 text-red-600" />

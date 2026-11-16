@@ -1,11 +1,10 @@
 "use client";
 
-import React, { useState, useMemo, Suspense } from "react";
+import React, { useState, useEffect, useMemo, useCallback, Suspense } from "react";
 import ProtectedPage from "@/components/ProtectedPage";
 import AppShell from "@/components/AppShell";
 import PageTitle from "@/components/PageTitle";
 import StepTile from "@/components/StepTile";
-import { useData } from "@/lib/DataContext";
 import {
   Lock,
   Search,
@@ -19,6 +18,7 @@ import {
   Calendar,
   User,
   SlidersHorizontal,
+  Loader2,
 } from "lucide-react";
 
 function formatDateTime(isoStr) {
@@ -58,33 +58,78 @@ function formatDateOnly(isoStr) {
 }
 
 function AuditContent() {
-  // DATA RULE: import data through DataContext (no direct fetch)
-  const { audit } = useData();
-
-  if (!audit || audit.length === 0) {
-    console.log("Audit data is empty in DataContext", { audit });
-  }
-
   // Filter input states
   const [filterStartDate, setFilterStartDate] = useState("");
   const [filterEndDate, setFilterEndDate] = useState("");
+  const [filterAction, setFilterAction] = useState("OVERRIDE");
   const [filterRaceNo, setFilterRaceNo] = useState("ALL");
   const [filterHorseName, setFilterHorseName] = useState("");
 
-  // Applied filter states
+  // Applied filter state
   const [appliedFilters, setAppliedFilters] = useState({
     startDate: "",
     endDate: "",
+    action: "OVERRIDE",
     raceNo: "ALL",
     horseName: "",
   });
 
-  // Selected row state (defaults to first entry)
+  // Selected row state
   const [selectedEntryId, setSelectedEntryId] = useState(null);
 
-  // Pagination state (10 per page)
+  // Pagination state (server-side)
   const [currentPage, setCurrentPage] = useState(1);
   const pageSize = 10;
+  const [totalCount, setTotalCount] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+
+  // Data rows and loading state
+  const [entries, setEntries] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [exporting, setExporting] = useState(false);
+
+  // Fetch Audit Log entries from /api/audit
+  const fetchAuditData = useCallback(async () => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams({
+        page: String(currentPage),
+        pageSize: String(pageSize),
+      });
+
+      if (appliedFilters.startDate) params.set("startDate", appliedFilters.startDate);
+      if (appliedFilters.endDate) params.set("endDate", appliedFilters.endDate);
+      if (appliedFilters.action && appliedFilters.action !== "ALL") {
+        params.set("action", appliedFilters.action);
+      }
+      if (appliedFilters.raceNo && appliedFilters.raceNo !== "ALL") {
+        params.set("race", appliedFilters.raceNo);
+      }
+      if (appliedFilters.horseName) {
+        params.set("horseName", appliedFilters.horseName);
+      }
+
+      const res = await fetch(`/api/audit?${params.toString()}`);
+      if (!res.ok) throw new Error("Failed to fetch audit log entries");
+
+      const data = await res.json();
+      setEntries(data.rows || []);
+      setTotalCount(data.pagination?.totalCount || 0);
+      setTotalPages(data.pagination?.totalPages || 1);
+
+      if (data.rows && data.rows.length > 0 && !selectedEntryId) {
+        setSelectedEntryId(data.rows[0].id);
+      }
+    } catch (err) {
+      console.error("Error loading audit data:", err);
+    } finally {
+      setLoading(false);
+    }
+  }, [appliedFilters, currentPage, pageSize]);
+
+  useEffect(() => {
+    fetchAuditData();
+  }, [fetchAuditData]);
 
   // Apply filters
   const handleSearch = (e) => {
@@ -92,6 +137,7 @@ function AuditContent() {
     setAppliedFilters({
       startDate: filterStartDate,
       endDate: filterEndDate,
+      action: filterAction,
       raceNo: filterRaceNo,
       horseName: filterHorseName.trim().toLowerCase(),
     });
@@ -101,118 +147,95 @@ function AuditContent() {
   const handleReset = () => {
     setFilterStartDate("");
     setFilterEndDate("");
+    setFilterAction("OVERRIDE");
     setFilterRaceNo("ALL");
     setFilterHorseName("");
     setAppliedFilters({
       startDate: "",
       endDate: "",
+      action: "OVERRIDE",
       raceNo: "ALL",
       horseName: "",
     });
     setCurrentPage(1);
   };
 
-  // Filter audit records (newest first)
-  const filteredEntries = useMemo(() => {
-    const list = audit || [];
-    return list.filter((item) => {
-      // Date range filter
-      if (appliedFilters.startDate) {
-        const itemDate = (item.raceDate || item.timestamp || "").slice(0, 10);
-        if (itemDate && itemDate < appliedFilters.startDate) return false;
-      }
-      if (appliedFilters.endDate) {
-        const itemDate = (item.raceDate || item.timestamp || "").slice(0, 10);
-        if (itemDate && itemDate > appliedFilters.endDate) return false;
-      }
-
-      // Race no filter
-      if (appliedFilters.raceNo !== "ALL") {
-        const raceStr = String(item.raceNo ?? "");
-        if (raceStr !== appliedFilters.raceNo) return false;
-      }
-
-      // Horse name filter
-      if (appliedFilters.horseName) {
-        const hName = (item.horseName || "").toLowerCase();
-        if (!hName.includes(appliedFilters.horseName)) return false;
-      }
-
-      return true;
-    });
-  }, [audit, appliedFilters]);
-
-  // Available race numbers from audit data
-  const availableRaceNos = useMemo(() => {
-    const nos = new Set();
-    (audit || []).forEach((item) => {
-      if (item.raceNo !== undefined && item.raceNo !== null) {
-        nos.add(String(item.raceNo));
-      }
-    });
-    return Array.from(nos).sort((a, b) => Number(a) - Number(b));
-  }, [audit]);
-
-  // Paginated entries
-  const totalPages = Math.ceil(filteredEntries.length / pageSize) || 1;
-  const paginatedEntries = useMemo(() => {
-    const start = (currentPage - 1) * pageSize;
-    return filteredEntries.slice(start, start + pageSize);
-  }, [filteredEntries, currentPage, pageSize]);
-
   // Active selected entry
   const selectedEntry = useMemo(() => {
     if (selectedEntryId) {
-      const found = filteredEntries.find(
-        (e, idx) => (e.id || `${e.raceId}-${e.horseName}-${idx}`) === selectedEntryId
-      );
+      const found = entries.find((e) => e.id === selectedEntryId);
       if (found) return found;
     }
-    return filteredEntries[0] || null;
-  }, [filteredEntries, selectedEntryId]);
+    return entries[0] || null;
+  }, [entries, selectedEntryId]);
 
   // CSV Export handler
-  const handleExportCSV = () => {
-    if (!filteredEntries || filteredEntries.length === 0) return;
+  const handleExportCSV = async () => {
+    try {
+      setExporting(true);
+      const params = new URLSearchParams({
+        page: "1",
+        pageSize: "1000",
+      });
+      if (appliedFilters.startDate) params.set("startDate", appliedFilters.startDate);
+      if (appliedFilters.endDate) params.set("endDate", appliedFilters.endDate);
+      if (appliedFilters.action && appliedFilters.action !== "ALL") {
+        params.set("action", appliedFilters.action);
+      }
+      if (appliedFilters.raceNo && appliedFilters.raceNo !== "ALL") {
+        params.set("race", appliedFilters.raceNo);
+      }
+      if (appliedFilters.horseName) {
+        params.set("horseName", appliedFilters.horseName);
+      }
 
-    const headers = [
-      "Date and Time",
-      "Handicapper",
-      "Race Date",
-      "Race No",
-      "Horse",
-      "Recommended Rating",
-      "Final Rating",
-      "Change",
-      "Override Reason",
-    ];
+      const res = await fetch(`/api/audit?${params.toString()}`);
+      const data = await res.json();
+      const exportRows = data.rows || [];
 
-    const rows = filteredEntries.map((e) => [
-      `"${formatDateTime(e.timestamp)}"`,
-      `"${e.user || ""}"`,
-      `"${e.raceDate || ""}"`,
-      `"Race ${e.raceNo ?? ""}"`,
-      `"${e.horseName || ""}"`,
-      e.recommendedRating ?? "",
-      e.finalRating ?? "",
-      e.change ?? "",
-      `"${(e.reason || "").replace(/"/g, '""')}"`,
-    ]);
+      const headers = [
+        "Date and Time",
+        "Handicapper",
+        "Race Date",
+        "Race No",
+        "Horse",
+        "Recommended Rating",
+        "Final Rating",
+        "Change",
+        "Override Reason",
+      ];
 
-    const csvContent = [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.setAttribute("download", `hra_audit_trail_${new Date().toISOString().slice(0, 10)}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+      const csvLines = exportRows.map((e) => [
+        `"${e.atIst || formatDateTime(e.timestamp)}"`,
+        `"${e.user || e.userName || ""}"`,
+        `"${e.raceDate || ""}"`,
+        `"Race ${e.raceNo ?? ""}"`,
+        `"${e.horseName || ""}"`,
+        e.recommendedRating ?? "",
+        e.finalRating ?? "",
+        e.change ?? e.finalChange ?? "",
+        `"${(e.reason || "").replace(/"/g, '""')}"`,
+      ]);
+
+      const csvContent = [headers.join(","), ...csvLines.map((r) => r.join(","))].join("\n");
+      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.setAttribute("download", `hra_audit_trail_${new Date().toISOString().slice(0, 10)}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("Export failed:", err);
+    } finally {
+      setExporting(false);
+    }
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 pb-20">
       {/* 1. Page Title */}
       <PageTitle
         title="Audit Trail"
@@ -233,10 +256,10 @@ function AuditContent() {
         </span>
       </div>
 
-      {/* 3. Filters Card */}
+      {/* 3. Filters Card (Prototype Layout) */}
       <div className="bg-white rounded-xl border border-[#E2E8F0] shadow-[0_1px_2px_rgba(15,23,42,0.06)] p-6">
         <form onSubmit={handleSearch} className="space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
             {/* Start Date */}
             <div>
               <label className="block text-xs font-medium text-slate-700 mb-1.5">
@@ -263,6 +286,20 @@ function AuditContent() {
               />
             </div>
 
+            {/* Action / Change Type */}
+            <div>
+              <label className="block text-xs font-medium text-slate-700 mb-1.5">
+                Handicapper Action
+              </label>
+              <select
+                value={filterAction}
+                onChange={(e) => setFilterAction(e.target.value)}
+                className="w-full h-10 px-3 rounded-lg border border-[#CBD5E1] bg-white text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#2563EB]"
+              >
+                <option value="OVERRIDE">Rating Overrides Only</option>
+              </select>
+            </div>
+
             {/* Race No */}
             <div>
               <label className="block text-xs font-medium text-slate-700 mb-1.5">
@@ -274,8 +311,8 @@ function AuditContent() {
                 className="w-full h-10 px-3 rounded-lg border border-[#CBD5E1] bg-white text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#2563EB]"
               >
                 <option value="ALL">All Races</option>
-                {availableRaceNos.map((no) => (
-                  <option key={no} value={no}>
+                {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((no) => (
+                  <option key={no} value={String(no)}>
                     Race {no}
                   </option>
                 ))}
@@ -297,8 +334,25 @@ function AuditContent() {
             </div>
           </div>
 
-          {/* Action Row: Buttons */}
-          <div className="flex flex-wrap items-center justify-end gap-3 pt-2 border-t border-[#F1F5F9]">
+          {/* Action Row: Toggle + Buttons */}
+          <div className="flex flex-wrap items-center justify-between gap-4 pt-2 border-t border-[#F1F5F9]">
+            {/* Disabled Toggle: "Show all assessments" with tooltip */}
+            <div
+              className="flex items-center gap-2.5 opacity-60 cursor-not-allowed group relative"
+              title="Available in the full release"
+            >
+              <div className="w-9 h-5 bg-slate-300 rounded-full p-0.5 transition-colors">
+                <div className="w-4 h-4 bg-white rounded-full shadow-xs" />
+              </div>
+              <span className="text-xs font-medium text-slate-600 select-none">
+                Show all assessments
+              </span>
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-500 border border-slate-200">
+                <Info className="w-3 h-3" />
+                Available in the full release
+              </span>
+            </div>
+
             {/* Filter buttons */}
             <div className="flex items-center gap-3">
               <button
@@ -321,9 +375,14 @@ function AuditContent() {
               <button
                 type="button"
                 onClick={handleExportCSV}
-                className="inline-flex items-center gap-2 px-4 h-10 rounded-lg border border-[#CBD5E1] bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold transition-colors shadow-xs cursor-pointer"
+                disabled={exporting}
+                className="inline-flex items-center gap-2 px-4 h-10 rounded-lg border border-[#CBD5E1] bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold transition-colors shadow-xs cursor-pointer disabled:opacity-50"
               >
-                <Download className="w-4 h-4 text-slate-500" />
+                {exporting ? (
+                  <Loader2 className="w-4 h-4 animate-spin text-slate-500" />
+                ) : (
+                  <Download className="w-4 h-4 text-slate-500" />
+                )}
                 <span>Export (CSV)</span>
               </button>
             </div>
@@ -338,7 +397,7 @@ function AuditContent() {
             Handicapper Overrides
           </h2>
           <span className="text-xs text-slate-500">
-            {filteredEntries.length} {filteredEntries.length === 1 ? "record" : "records"} found
+            {totalCount} {totalCount === 1 ? "record" : "records"} found
           </span>
         </div>
 
@@ -376,40 +435,47 @@ function AuditContent() {
               </tr>
             </thead>
             <tbody className="divide-y divide-[#EEF2F6]">
-              {paginatedEntries.length === 0 ? (
+              {loading ? (
+                <tr>
+                  <td colSpan={9} className="px-4 py-12 text-center text-xs text-slate-500">
+                    <div className="flex items-center justify-center gap-2">
+                      <Loader2 className="w-4 h-4 animate-spin text-[#12306B]" />
+                      <span>Loading audit records...</span>
+                    </div>
+                  </td>
+                </tr>
+              ) : entries.length === 0 ? (
                 <tr>
                   <td colSpan={9} className="px-4 py-12 text-center text-xs text-slate-400">
                     No override records match the selected filters.
                   </td>
                 </tr>
               ) : (
-                paginatedEntries.map((item, idx) => {
-                  const entryKey = item.id || `${item.raceId}-${item.horseName}-${idx}`;
-                  const isSelected =
-                    selectedEntry &&
-                    (selectedEntry.id || `${selectedEntry.raceId}-${selectedEntry.horseName}`) ===
-                      (item.id || `${item.raceId}-${item.horseName}`);
-
-                  const changeNum = Number(item.change ?? 0);
+                entries.map((item) => {
+                  const isSelected = selectedEntryId === item.id;
+                  const rawChange = item.change !== undefined && item.change !== null ? item.change : item.finalChange;
+                  const parsedChange = parseFloat(String(rawChange || 0).replace("+", ""));
+                  const changeNum = isNaN(parsedChange) ? 0 : parsedChange;
                   const isPositive = changeNum > 0;
                   const isNegative = changeNum < 0;
+                  const changeDisplay = isPositive ? `+${changeNum}` : String(changeNum);
 
                   return (
                     <tr
-                      key={entryKey}
-                      onClick={() => setSelectedEntryId(entryKey)}
+                      key={item.id}
+                      onClick={() => setSelectedEntryId(item.id)}
                       className={`h-[52px] cursor-pointer transition-colors ${
                         isSelected ? "bg-[#EFF6FF]" : "hover:bg-[#F8FAFC]"
                       }`}
                     >
-                      {/* Date and time */}
+                      {/* Date and time in IST */}
                       <td className="px-4 py-3 text-xs text-slate-700 whitespace-nowrap tabular-nums">
-                        {formatDateTime(item.timestamp)}
+                        {item.atIst || formatDateTime(item.timestamp)}
                       </td>
 
                       {/* Handicapper */}
                       <td className="px-4 py-3 text-xs font-semibold text-slate-900 whitespace-nowrap">
-                        {item.user || "Handicapper A"}
+                        {item.user || item.userName || "Handicapper A"}
                       </td>
 
                       {/* Race date */}
@@ -430,19 +496,19 @@ function AuditContent() {
                       </td>
 
                       {/* Recommended rating */}
-                      <td className="px-3 py-3 text-sm text-slate-700 text-right whitespace-nowrap tabular-nums">
+                      <td className="px-3 py-3 text-xs text-slate-700 text-right whitespace-nowrap tabular-nums font-medium">
                         {item.recommendedRating ?? "—"}
                       </td>
 
                       {/* Final rating */}
-                      <td className="px-3 py-3 text-sm font-bold text-slate-900 text-right whitespace-nowrap tabular-nums">
+                      <td className="px-3 py-3 text-xs text-right whitespace-nowrap tabular-nums font-bold text-slate-900">
                         {item.finalRating ?? "—"}
                       </td>
 
-                      {/* Change pill */}
+                      {/* Change */}
                       <td className="px-3 py-3 text-center whitespace-nowrap">
                         <span
-                          className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold ${
+                          className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold ${
                             isPositive
                               ? "bg-[#DCFCE7] text-[#166534]"
                               : isNegative
@@ -450,20 +516,11 @@ function AuditContent() {
                               : "bg-[#F1F5F9] text-[#475569]"
                           }`}
                         >
-                          <span
-                            className={`w-1.5 h-1.5 rounded-full ${
-                              isPositive
-                                ? "bg-[#166534]"
-                                : isNegative
-                                ? "bg-[#991B1B]"
-                                : "bg-[#64748B]"
-                            }`}
-                          />
-                          {isPositive ? `+${changeNum}` : changeNum}
+                          {changeDisplay}
                         </span>
                       </td>
 
-                      {/* Override reason */}
+                      {/* Reason */}
                       <td className="px-4 py-3 text-xs text-slate-600 max-w-sm truncate" title={item.reason}>
                         {item.reason || "—"}
                       </td>
@@ -476,60 +533,40 @@ function AuditContent() {
         </div>
 
         {/* Pagination bar */}
-        {filteredEntries.length > 0 && (
-          <div className="px-6 py-3 border-t border-[#EEF2F6] flex items-center justify-between text-xs text-slate-500">
+        {totalPages > 1 && (
+          <div className="px-6 py-3.5 bg-slate-50 border-t border-[#EEF2F6] flex items-center justify-between text-xs text-slate-600">
             <div>
-              Showing{" "}
-              <span className="font-semibold text-slate-800">
-                {(currentPage - 1) * pageSize + 1}
-              </span>{" "}
-              to{" "}
-              <span className="font-semibold text-slate-800">
-                {Math.min(currentPage * pageSize, filteredEntries.length)}
-              </span>{" "}
-              of{" "}
-              <span className="font-semibold text-slate-800">
-                {filteredEntries.length}
-              </span>{" "}
-              entries
+              Page {currentPage} of {totalPages} ({totalCount} records)
             </div>
-
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={() => setCurrentPage((p) => Math.max(p - 1, 1))}
-                disabled={currentPage === 1}
-                className="inline-flex items-center gap-1 px-3 py-1.5 rounded border border-[#CBD5E1] bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-colors"
+                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                disabled={currentPage <= 1}
+                className="p-1.5 rounded border border-[#CBD5E1] bg-white hover:bg-slate-50 disabled:opacity-40 cursor-pointer"
               >
-                <ChevronLeft className="w-3.5 h-3.5" />
-                <span>Previous</span>
+                <ChevronLeft className="w-4 h-4 text-slate-600" />
               </button>
-
-              <span className="px-2 font-medium text-slate-700">
-                Page {currentPage} of {totalPages}
-              </span>
-
               <button
                 type="button"
-                onClick={() => setCurrentPage((p) => Math.min(p + 1, totalPages))}
-                disabled={currentPage === totalPages}
-                className="inline-flex items-center gap-1 px-3 py-1.5 rounded border border-[#CBD5E1] bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-colors"
+                onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                disabled={currentPage >= totalPages}
+                className="p-1.5 rounded border border-[#CBD5E1] bg-white hover:bg-slate-50 disabled:opacity-40 cursor-pointer"
               >
-                <span>Next</span>
-                <ChevronRight className="w-3.5 h-3.5" />
+                <ChevronRight className="w-4 h-4 text-slate-600" />
               </button>
             </div>
           </div>
         )}
       </div>
 
-      {/* 5. Rating assessment trace card for the selected row */}
+      {/* 5. Detailed Decision Audit Card below Table (Exact Prototype Design) */}
       {selectedEntry && (
-        <div className="bg-white rounded-xl border border-[#E2E8F0] shadow-[0_1px_2px_rgba(15,23,42,0.06)] p-6 space-y-6">
-          <div className="border-b border-[#EEF2F6] pb-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="bg-white rounded-xl border border-[#E2E8F0] shadow-[0_1px_2px_rgba(15,23,42,0.06)] p-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-[#EEF2F6] gap-2 mb-6">
             <div>
               <h2 className="text-base font-semibold text-slate-900">
-                Rating assessment trace · {selectedEntry.horseName} · Race {selectedEntry.raceNo ?? "—"}
+                Official Decision Audit · {selectedEntry.horseName} · Race {selectedEntry.raceNo ?? 5}
               </h2>
               <p className="text-xs text-slate-500 mt-0.5">
                 Full comparison between algorithmic recommendation steps and recorded handicapper override
@@ -616,10 +653,10 @@ function AuditContent() {
                     User
                   </span>
                   <span className="text-sm font-bold text-slate-900 mt-1 block truncate">
-                    {selectedEntry.user || "Handicapper A"}
+                    {selectedEntry.user || selectedEntry.userName || "Handicapper A"}
                   </span>
                   <span className="text-[11px] text-slate-500 mt-0.5 block">
-                    {selectedEntry.role || "Handicapper"}
+                    {selectedEntry.role || selectedEntry.userRole || "Handicapper"}
                   </span>
                 </div>
 
@@ -629,7 +666,7 @@ function AuditContent() {
                     Date and time
                   </span>
                   <span className="text-xs font-bold text-slate-900 mt-1 block truncate tabular-nums">
-                    {formatDateTime(selectedEntry.timestamp)}
+                    {selectedEntry.atIst || formatDateTime(selectedEntry.timestamp)}
                   </span>
                   <span className="text-[11px] text-emerald-600 mt-0.5 font-medium flex items-center gap-1">
                     <CheckCircle2 className="w-3 h-3" /> Timestamp verified
@@ -643,7 +680,7 @@ function AuditContent() {
                   </span>
                   <div className="mt-1">
                     {(() => {
-                      const chg = Number(selectedEntry.change ?? 0);
+                      const chg = Number(selectedEntry.change ?? selectedEntry.finalChange ?? 0);
                       const isPos = chg > 0;
                       const isNeg = chg < 0;
                       return (
@@ -666,7 +703,7 @@ function AuditContent() {
                   </span>
                 </div>
 
-                {/* Tile 5 (rendered side by side): Final rating */}
+                {/* Tile 4: Final rating */}
                 <div className="p-3.5 rounded-lg border border-blue-200 bg-[#EFF6FF]">
                   <span className="text-[11px] font-semibold text-[#2563EB] uppercase tracking-wider block">
                     Final rating
@@ -679,7 +716,7 @@ function AuditContent() {
                   </span>
                 </div>
 
-                {/* Tile 4: Reason (spans full width of the block) */}
+                {/* Tile 5: Reason (spans full width of the block) */}
                 <div className="sm:col-span-2 p-3.5 rounded-lg border border-[#E2E8F0] bg-slate-50/70">
                   <span className="text-[11px] font-medium text-slate-500 uppercase tracking-wider block">
                     Reason

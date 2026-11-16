@@ -1,18 +1,16 @@
 "use client";
 
 import React from "react";
-import { useData } from "@/lib/DataContext";
 import { useAuth } from "@/lib/AuthContext";
 import { Calendar, User } from "lucide-react";
 
 export default function TopBar() {
-  const { meta, today } = useData();
   const { user } = useAuth();
 
   // Format date nicely e.g. "Saturday, 07 Nov 2026"
   const formattedDate = (() => {
     try {
-      const d = new Date(today || "2026-11-07");
+      const d = new Date("2026-11-07");
       return d.toLocaleDateString("en-GB", {
         weekday: "long",
         day: "2-digit",

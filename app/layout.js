@@ -1,7 +1,6 @@
 import { Inter } from "next/font/google";
 import "./globals.css";
 import { AuthProvider } from "@/lib/AuthContext";
-import { DataProvider } from "@/lib/DataContext";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -18,9 +17,7 @@ export default function RootLayout({ children }) {
   return (
     <html lang="en" className={inter.variable}>
       <body className={`${inter.className} antialiased bg-[#F8FAFC]`}>
-        <AuthProvider>
-          <DataProvider>{children}</DataProvider>
-        </AuthProvider>
+        <AuthProvider>{children}</AuthProvider>
       </body>
     </html>
   );
