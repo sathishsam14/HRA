@@ -1,12 +1,14 @@
 // worker/index.js
-// Background worker process that checks for new files every 5 minutes using node-cron
-// and calls importFile() from lib/import. Never writes to or deletes from the source.
+// Background worker process that monitors FTP / SFTP / local source every 5 minutes using node-cron
+// and calls importFile() from lib/import. Strictly read-only: never writes, renames, or deletes files at the source.
 // Source is chosen by FTP_MODE in .env: local | sftp | ftps.
+// Uses DATABASE_URL from .env.
 
 import cron from "node-cron";
 import crypto from "node:crypto";
 import db from "../lib/db.js";
 import { importFile } from "../lib/import/index.js";
+import { reRateAllOpenRaces } from "../lib/rate.js";
 import { detectFileType } from "./file-types.js";
 import * as localSource from "./sources/local.js";
 import * as sftpSource from "./sources/sftp.js";
@@ -25,6 +27,16 @@ export function getSource(mode = process.env.FTP_MODE || "local") {
   }
 }
 
+// Processing priority order: COEFFICIENT, then HISTORY, then ACTIVE_HORSE, then reports
+const TYPE_PRIORITY = {
+  COEFFICIENT: 1,
+  HISTORY: 2,
+  ACTIVE_HORSE: 3,
+  STARTER: 4,
+  VETERINARY: 4,
+  INCIDENT: 4,
+};
+
 /**
  * Executes a single scan and import pass.
  * @param {Object} [options]
@@ -33,7 +45,7 @@ export function getSource(mode = process.env.FTP_MODE || "local") {
  */
 export async function runOnce({ mode } = {}) {
   const source = getSource(mode);
-  console.log(`\n🔍 [WORKER] Checking for incoming files via source: ${source.mode.toUpperCase()}...`);
+  console.log(`\n🔍 [WORKER] Checking incoming files via source: ${source.mode.toUpperCase()}...`);
 
   let fileList = [];
   try {
@@ -48,58 +60,74 @@ export async function runOnce({ mode } = {}) {
     return { processed: 0, saved: 0, skipped: 0, failed: 0 };
   }
 
-  console.log(`📦 [WORKER] Found ${fileList.length} file(s) to inspect.`);
+  console.log(`📦 [WORKER] Found ${fileList.length} file(s) in source.`);
 
   let savedCount = 0;
   let skippedCount = 0;
   let failedCount = 0;
 
+  // 1. Resolve file types and filter out unknown names
+  const recognizedFiles = [];
   for (const file of fileList) {
-    const fileName = file.name;
-    const fileType = detectFileType(fileName);
-
+    const fileType = detectFileType(file.name);
     if (!fileType) {
-      console.log(`[SKIPPED] ${fileName}: Unrecognized file type pattern`);
+      console.log(`[SKIPPED] "${file.name}": Unknown file type pattern`);
       skippedCount++;
-      continue;
+    } else {
+      recognizedFiles.push({
+        ...file,
+        fileType,
+        priority: TYPE_PRIORITY[fileType] || 99,
+      });
     }
+  }
+
+  // 2. Sort recognized files in strict order: COEFFICIENT (1), HISTORY (2), ACTIVE_HORSE (3), Reports (4)
+  recognizedFiles.sort((a, b) => a.priority - b.priority);
+
+  // 3. Process each file sequentially. A bad file must not stop others.
+  for (const file of recognizedFiles) {
+    const fileT0 = Date.now();
+    const fileName = file.name;
+    const fileType = file.fileType;
 
     try {
-      // 1. Read buffer from source (never write or delete source)
+      // Read buffer from source (strictly read-only)
       const buffer = await source.read(fileName);
 
-      // 2. Pre-check SHA-256 hash against UploadedFile table
+      // Pre-check SHA-256 hash + size against UploadedFile table
       const hash = crypto.createHash("sha256").update(buffer).digest("hex");
-      const existing = await db.uploadedFile.findUnique({
+      const existing = await db.uploadedFile.findFirst({
         where: {
-          name_size_hash: {
-            name: fileName,
-            size: buffer.length,
-            hash,
-          },
+          size: buffer.length,
+          hash,
         },
       });
 
       if (existing) {
-        console.log(`[SKIPPED] ${fileName}: Already processed (UploadedFile id: ${existing.id})`);
+        const fileElapsed = Date.now() - fileT0;
+        console.log(`[SKIPPED] "${fileName}" [${fileType}]: Already imported (size: ${buffer.length}, hash: ${hash.slice(0, 8)}..., previously "${existing.name}") in ${fileElapsed}ms`);
         skippedCount++;
         continue;
       }
 
-      // 3. Import file via core import engine
+      // Call importFile with source FTP
       const result = await importFile({
         fileName,
         buffer,
         fileType,
-        uploadedBy: null, // automated background process
+        uploadedBy: null,
+        source: "FTP",
       });
 
+      const fileElapsed = Date.now() - fileT0;
+
       if (result.skipped) {
-        console.log(`[SKIPPED] ${fileName}: ${result.message}`);
+        console.log(`[SKIPPED] "${fileName}" [${fileType}]: ${result.message} (${fileElapsed}ms)`);
         skippedCount++;
       } else if (result.success) {
         console.log(
-          `[SAVED] ${fileName} as ${fileType}: ${result.savedRows} row(s) saved.${
+          `[SAVED] "${fileName}" [${fileType}]: ${result.savedRows} row(s) imported in ${fileElapsed}ms.${
             result.unmatched?.length ? ` (${result.unmatched.length} unmatched remarks)` : ""
           }`
         );
@@ -108,17 +136,31 @@ export async function runOnce({ mode } = {}) {
         const errorDetail = result.errors?.length
           ? result.errors.map((e) => `Row ${e.row} [${e.column}]: ${e.reason}`).join("; ")
           : result.message;
-        console.log(`[FAILED] ${fileName}: ${errorDetail}`);
+        console.error(`[FAILED] "${fileName}" [${fileType}]: ${errorDetail} (${fileElapsed}ms)`);
         failedCount++;
       }
     } catch (err) {
-      console.log(`[FAILED] ${fileName}: ${err.message}`);
+      const fileElapsed = Date.now() - fileT0;
+      console.error(`[FAILED] "${fileName}" [${fileType}]: ${err.message} (${fileElapsed}ms)`);
       failedCount++;
     }
   }
 
+  // 4. After a cycle that imported anything, rate on the server by calling reRateAllOpenRaces() once
+  if (savedCount > 0) {
+    console.log(`\n⚡ [WORKER] Cycle imported ${savedCount} file(s). Triggering server-side rating for all open races via reRateAllOpenRaces()...`);
+    const rateT0 = Date.now();
+    try {
+      const reRated = await reRateAllOpenRaces();
+      const successCount = reRated.filter((r) => r.ok).length;
+      console.log(`🏁 [WORKER] Server-side re-rating completed: ${successCount} open race(s) rated in ${Date.now() - rateT0}ms.`);
+    } catch (rateErr) {
+      console.error("❌ [WORKER] Server-side re-rating error:", rateErr.message);
+    }
+  }
+
   console.log(
-    `🏁 [WORKER] Pass complete: ${savedCount} saved, ${skippedCount} skipped, ${failedCount} failed.\n`
+    `\n🏁 [WORKER] Cycle complete: ${savedCount} saved, ${skippedCount} skipped, ${failedCount} failed.\n`
   );
 
   return {
@@ -129,7 +171,7 @@ export async function runOnce({ mode } = {}) {
   };
 }
 
-// ─── CLI Entrypoint ───────────────────────────────────────────────────────────
+// ─── CLI / Daemon Entrypoint ──────────────────────────────────────────────────
 
 const isDirectRun =
   import.meta.url === `file://${process.argv[1]}` ||

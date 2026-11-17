@@ -1,56 +1,55 @@
 // worker/file-types.js
-// Resolves HRA fileType from incoming file name using simple, centralized naming rules.
+// Resolves HRA fileType from incoming file name using centralized naming rules.
+// Mapping rules:
+// - Consolidated -> HISTORY
+// - Active Horse -> ACTIVE_HORSE
+// - Coefficient -> COEFFICIENT
+// - Starter -> STARTER
+// - Veterinary -> VETERINARY
+// - Incident -> INCIDENT
+// Unknown names return null and are skipped.
 
 /**
  * Determines fileType from a file name.
  *
  * @param {string} fileName The base or relative file name
- * @returns {"MASTER" | "RACE" | "HISTORY" | "STARTER" | "VETERINARY" | "INCIDENT" | null}
+ * @returns {"COEFFICIENT" | "HISTORY" | "ACTIVE_HORSE" | "STARTER" | "VETERINARY" | "INCIDENT" | null}
  */
 export function detectFileType(fileName) {
   if (!fileName || typeof fileName !== "string") return null;
 
   const lower = fileName.toLowerCase();
 
-  // 0. Coefficient Workbook (e.g., Summary of P-Values & Coefficients with Rating Example.xlsx)
+  // 1. Coefficient -> COEFFICIENT
   if (lower.includes("coefficient") || lower.includes("p-value") || lower.includes("rating example")) {
     return "COEFFICIENT";
   }
 
-  // 1. Active Horse Report (e.g., Active Horse Previous perfomance report.xlsx)
+  // 2. Consolidated -> HISTORY
+  if (lower.includes("consolidated") || lower.includes("history") || lower.includes("bwm") || lower.includes("bsm")) {
+    return "HISTORY";
+  }
+
+  // 3. Active Horse -> ACTIVE_HORSE
   if (lower.includes("active horse") || lower.includes("perfomance") || lower.includes("performance")) {
     return "ACTIVE_HORSE";
   }
 
-  // 2. Master Data (e.g., master.xlsx, master_data.xlsx)
-  if (lower.includes("master")) {
-    return "MASTER";
-  }
-
-  // 3. Incident Report (e.g., incident_05.pdf, incident_report.docx)
-  if (lower.includes("incident")) {
-    return "INCIDENT";
-  }
-
-  // 4. Veterinary Report (e.g., vet_05.pdf, veterinary.docx)
-  if (lower.includes("vet") || lower.includes("veterinary")) {
-    return "VETERINARY";
-  }
-
-  // 5. Starter Report (e.g., starter_05.docx, starter_report.xlsx)
+  // 4. Starter -> STARTER
   if (lower.includes("starter")) {
     return "STARTER";
   }
 
-  // 6. Historical Race Ledger (e.g., history.xlsx, bwm, bsm)
-  if (lower.includes("history") || lower.includes("bwm") || lower.includes("bsm")) {
-    return "HISTORY";
+  // 5. Veterinary -> VETERINARY
+  if (lower.includes("veterinary") || lower.includes("vet")) {
+    return "VETERINARY";
   }
 
-  // 7. Current Race Card (e.g., race_05_07nov.xlsx, race_card.xlsx, btc_scenarios)
-  if (lower.includes("race") || lower.includes("card") || lower.includes("scenario")) {
-    return "RACE";
+  // 6. Incident -> INCIDENT
+  if (lower.includes("incident")) {
+    return "INCIDENT";
   }
 
+  // Unknown names return null and are skipped
   return null;
 }

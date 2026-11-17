@@ -52,14 +52,14 @@ export async function POST(request) {
 
     if (!file || typeof file === "string") {
       return NextResponse.json(
-        { error: "No file provided for upload" },
+        { ok: false, message: "No file provided for upload" },
         { status: 400 }
       );
     }
 
     if (!fileType) {
       return NextResponse.json(
-        { error: "fileType is required" },
+        { ok: false, message: "fileType is required" },
         { status: 400 }
       );
     }
@@ -80,8 +80,8 @@ export async function POST(request) {
       return NextResponse.json(
         {
           ok: false,
+          message: result.message || "Failed to process uploaded file",
           result,
-          error: result.message,
         },
         { status: 422 }
       );
@@ -95,7 +95,7 @@ export async function POST(request) {
     console.error("File upload error:", error);
     const status = error.status || 500;
     return NextResponse.json(
-      { error: error.message || "Failed to process uploaded file" },
+      { ok: false, message: error.message || "Failed to process uploaded file" },
       { status }
     );
   }

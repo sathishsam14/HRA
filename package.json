@@ -11,6 +11,7 @@
     "seed": "node prisma/seed.js",
     "seed:users": "node prisma/seed-users.js",
     "create-user": "node scripts/create-user.js",
+    "import": "node scripts/import.js",
     "worker": "node worker/index.js",
     "worker:once": "node worker/index.js --once"
   },

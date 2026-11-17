@@ -1,34 +1,38 @@
 // worker/sources/local.js
-// Local filesystem source: reads files from ./ftp-test/incoming without modifying or deleting them.
+// Local filesystem source: reads files from FTP_PATH in .env.
+// Strictly read-only: only lists and reads files, never writes, renames or deletes at the source.
 
 import fs from "node:fs";
 import path from "node:path";
 
-const INCOMING_DIR = path.resolve(process.cwd(), "ftp-test/incoming");
-
-function ensureDirectory() {
-  if (!fs.existsSync(INCOMING_DIR)) {
-    fs.mkdirSync(INCOMING_DIR, { recursive: true });
-  }
+function getLocalDir() {
+  const envPath = process.env.FTP_PATH || "./ftp-test/incoming";
+  return path.isAbsolute(envPath) ? envPath : path.resolve(process.cwd(), envPath);
 }
 
 /**
  * Lists all readable files in the local incoming directory.
+ * Never creates directories, writes, renames or deletes files.
  * @returns {Promise<Array<{ name: string, size: number }>>}
  */
 export async function list() {
-  ensureDirectory();
-  const entries = fs.readdirSync(INCOMING_DIR, { withFileTypes: true });
+  const dir = getLocalDir();
+  if (!fs.existsSync(dir)) {
+    return [];
+  }
 
+  const entries = fs.readdirSync(dir, { withFileTypes: true });
   const files = [];
   for (const entry of entries) {
     if (entry.isFile() && !entry.name.startsWith(".")) {
-      const fullPath = path.join(INCOMING_DIR, entry.name);
-      const stat = fs.statSync(fullPath);
-      files.push({
-        name: entry.name,
-        size: stat.size,
-      });
+      const fullPath = path.join(dir, entry.name);
+      try {
+        const stat = fs.statSync(fullPath);
+        files.push({
+          name: entry.name,
+          size: stat.size,
+        });
+      } catch {}
     }
   }
 
@@ -37,15 +41,15 @@ export async function list() {
 
 /**
  * Reads a file from the local incoming directory as a Buffer.
- * Never modifies or deletes the file.
+ * Never modifies, renames or deletes the file.
  * @param {string} name Base file name
  * @returns {Promise<Buffer>}
  */
 export async function read(name) {
-  ensureDirectory();
-  const fullPath = path.join(INCOMING_DIR, name);
+  const dir = getLocalDir();
+  const fullPath = path.join(dir, name);
   if (!fs.existsSync(fullPath)) {
-    throw new Error(`Local source file not found: ${name}`);
+    throw new Error(`Local source file not found: ${name} (path: ${fullPath})`);
   }
   return fs.readFileSync(fullPath);
 }

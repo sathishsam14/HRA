@@ -20,9 +20,7 @@ import {
   Layers,
   Send,
   SlidersHorizontal,
-  RefreshCw,
   Loader2,
-  Upload,
 } from "lucide-react";
 
 function getOrdinal(n) {
@@ -88,10 +86,49 @@ function RatingEngineContent() {
   // Local working decisions (entryId -> { finalChange, finalRating, overridden, overrideReason })
   const [workingDecisions, setWorkingDecisions] = useState({});
   const [submitting, setSubmitting] = useState(false);
-  const [autoRating, setAutoRating] = useState(false);
   const [toastMessage, setToastMessage] = useState("");
   const [overrideModalHorse, setOverrideModalHorse] = useState(null);
   const [selectedHorseId, setSelectedHorseId] = useState(null);
+
+  // Track uploaded files status in rating engine
+  const [uploadedFilesState, setUploadedFilesState] = useState({
+    HISTORY: { uploaded: false, fileName: "", detail: "BWM-BSM 22-26-Consolidated.xlsx" },
+    ACTIVE_HORSE: { uploaded: false, fileName: "", detail: "Active Horse Previous perfomance report.xlsx" },
+    COEFFICIENT: { uploaded: false, fileName: "", detail: "Coefficient_Table.xlsx (51 rules)" },
+    STARTER: { uploaded: false, fileName: "", detail: "Optional" },
+    VETERINARY: { uploaded: false, fileName: "", detail: "Optional" },
+    INCIDENT: { uploaded: false, fileName: "", detail: "Optional" },
+  });
+
+  // Check existing upload records on mount
+  useEffect(() => {
+    async function checkExistingUploads() {
+      try {
+        const res = await fetch("/api/upload");
+        if (res.ok) {
+          const data = await res.json();
+          const files = data.files || [];
+          setUploadedFilesState((prev) => {
+            const next = { ...prev };
+            for (const f of files) {
+              const t = f.fileType;
+              if (next[t] && !next[t].uploaded) {
+                next[t] = {
+                  uploaded: f.status === "PROCESSED" || f.status === "SKIPPED",
+                  fileName: f.fileName,
+                  detail: f.fileName,
+                };
+              }
+            }
+            return next;
+          });
+        }
+      } catch (err) {
+        console.warn("Could not check uploaded files status:", err);
+      }
+    }
+    checkExistingUploads();
+  }, []);
 
   // Fetch races with client-side caching (SWR: render cache immediately without blocking reload)
   const loadRaces = async (forceRefresh = false) => {
@@ -204,45 +241,6 @@ function RatingEngineContent() {
     loadRaces();
   }, [venueFilter, dateFilter, raceTypeFilter, raceNoFilter, categoryFilter, distanceFilter]);
 
-  // Handle manual Auto-Rate / Validate action
-  const handleAutoRate = async () => {
-    try {
-      setAutoRating(true);
-      const res = await fetch("/api/rating-engine/re-rate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          raceId: currentRace ? currentRace.id : "ALL",
-        }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || "Auto-rate validation failed");
-      }
-
-      // Clear cached data so fresh ratings are loaded
-      if (typeof window !== "undefined") {
-        Object.keys(sessionStorage).forEach((key) => {
-          if (key.startsWith("hra_cache_races_")) {
-            sessionStorage.removeItem(key);
-          }
-        });
-      }
-
-      setToastMessage(data.message || "Ratings validated & auto-rated successfully!");
-      setTimeout(() => setToastMessage(""), 5000);
-
-      // Force reload fresh from database
-      await loadRaces(true);
-    } catch (err) {
-      console.error("Auto-rate error:", err);
-      alert(err.message || "Failed to trigger auto-rating validation");
-    } finally {
-      setAutoRating(false);
-    }
-  };
-
   // Selected race object
   const currentRace = useMemo(() => {
     return races.find((r) => r.id === selectedRaceId) || races[0] || null;
@@ -301,56 +299,65 @@ function RatingEngineContent() {
 
   // Race files state matching the 3 primary files + 3 steward reports (6 cards)
   const raceFiles = useMemo(() => {
-    if (!currentRace) return [];
-    const hasStarter = currentHorses.some((h) => h.starterRemark);
-    const hasVet = currentHorses.some((h) => h.veterinaryRemark);
-    const hasIncident = currentHorses.some((h) => h.incidentRemark);
+    const hasStarter = currentHorses.some((h) => h.starterRemark) || uploadedFilesState.STARTER.uploaded;
+    const hasVet = currentHorses.some((h) => h.veterinaryRemark) || uploadedFilesState.VETERINARY.uploaded;
+    const hasIncident = currentHorses.some((h) => h.incidentRemark) || uploadedFilesState.INCIDENT.uploaded;
+
+    const isMasterDone = uploadedFilesState.HISTORY.uploaded || !!currentRace;
+    const isPrevHistoryDone = uploadedFilesState.ACTIVE_HORSE.uploaded;
+    const isCoeffDone = uploadedFilesState.COEFFICIENT.uploaded;
 
     return [
       {
-        name: "Master data",
+        name: "Master Data",
         fileType: "HISTORY",
-        status: "Received",
-        detail: "BWM-BSM 22-26-Consolidated.xlsx",
+        status: isMasterDone ? "Received" : "Not uploaded",
+        detail: uploadedFilesState.HISTORY.fileName || "BWM-BSM 22-26-Consolidated.xlsx",
         icon: Database,
+        isPrimary: true,
       },
       {
-        name: "Previous race history",
+        name: "Previous Race History",
         fileType: "ACTIVE_HORSE",
-        status: "Received",
-        detail: "Active Horse Previous perfomance report.xlsx",
+        status: isPrevHistoryDone ? "Received" : "Not uploaded",
+        detail: uploadedFilesState.ACTIVE_HORSE.fileName || "Active Horse Previous perfomance report.xlsx",
         icon: History,
+        isPrimary: true,
       },
       {
-        name: "Coefficient table",
+        name: "Coefficient Table",
         fileType: "COEFFICIENT",
-        status: "Uploaded",
-        detail: "Coefficient_Table.xlsx (51 rules)",
+        status: isCoeffDone ? "Uploaded" : "Not uploaded",
+        detail: uploadedFilesState.COEFFICIENT.fileName || "Coefficient_Table.xlsx (51 rules)",
         icon: SlidersHorizontal,
+        isPrimary: true,
       },
       {
-        name: "Starter report",
+        name: "Starter Report",
         fileType: "STARTER",
         status: hasStarter ? "Uploaded" : "Not uploaded",
-        detail: hasStarter ? `starter_${currentRace.raceNo}.docx` : "Optional",
+        detail: uploadedFilesState.STARTER.fileName || (currentRace && hasStarter ? `starter_${currentRace.raceNo}.docx` : "Optional"),
         icon: FileText,
+        isPrimary: false,
       },
       {
-        name: "Veterinary report",
+        name: "Wordinary / Veterinary Report",
         fileType: "VETERINARY",
         status: hasVet ? "Uploaded" : "Not uploaded",
-        detail: hasVet ? `vet_${currentRace.raceNo}.pdf` : "Optional",
+        detail: uploadedFilesState.VETERINARY.fileName || (currentRace && hasVet ? `vet_${currentRace.raceNo}.pdf` : "Optional"),
         icon: FileText,
+        isPrimary: false,
       },
       {
-        name: "Incident report",
+        name: "Incident Report",
         fileType: "INCIDENT",
         status: hasIncident ? "Uploaded" : "Not uploaded",
-        detail: hasIncident ? `incident_${currentRace.raceNo}.docx` : "Optional",
+        detail: uploadedFilesState.INCIDENT.fileName || (currentRace && hasIncident ? `incident_${currentRace.raceNo}.docx` : "Optional"),
         icon: AlertTriangle,
+        isPrimary: false,
       },
     ];
-  }, [currentRace, currentHorses]);
+  }, [currentRace, currentHorses, uploadedFilesState]);
 
   // Handle local override save
   const handleSaveOverride = (overrideData) => {
@@ -436,45 +443,143 @@ function RatingEngineContent() {
   // Why this rating explanation sentence
   const whySentence = useMemo(() => {
     if (!activeHorse || !currentRace) return "";
-    const name = activeHorse.horseName;
+    const name = activeHorse.horseName || "Horse";
     const pl = activeHorse.placing;
-    const runners = currentHorses.length || 9;
+    const runners = currentHorses.length || currentRace.entries?.length || 0;
     const rType = currentRace.raceType || "Handicap";
-    const refPos = pl === 4 ? "4th (Reference)" : `${pl}${getOrdinal(pl)}`;
+    const cat = currentRace.category ? `Category ${currentRace.category}` : "";
+    const dist = currentRace.distance ? `${currentRace.distance}m` : "";
+    const details = [cat, dist].filter(Boolean).join(", ");
+    const raceContext = details ? ` (${details})` : "";
+    const curr = activeHorse.currentRating;
+    const recRating = activeHorse.recommendedRating;
+    const recChange = activeHorse.recommendedChange;
+    const finalRating = activeHorse.finalRating;
+    const finalChange = activeHorse.finalChange;
+    const reasons = Array.isArray(activeHorse.reasons) ? activeHorse.reasons : [];
 
+    const findReason = (prefix) =>
+      reasons.find((r) => typeof r === "string" && r.toLowerCase().startsWith(prefix.toLowerCase()));
+
+    // 1. Handicapper Override
     if (activeHorse.overridden) {
-      return `${name} finished ${pl}${getOrdinal(
-        pl
-      )} in a ${runners}-horse ${rType} race. The automatic recommendation was adjusted by steward discretion: ${
-        activeHorse.overrideReason || activeHorse.reasonsExplanation || "Handicapper override applied"
-      }.`;
+      const plText = pl ? `finished ${pl}${getOrdinal(pl)}` : "ran";
+      const reasonNote = activeHorse.overrideReason?.trim()
+        ? `: "${activeHorse.overrideReason.trim()}"`
+        : "";
+      const recSign = recChange != null && recChange >= 0 ? "+" : "";
+      const finalSign = finalChange != null && finalChange >= 0 ? "+" : "";
+      return `${name} ${plText} in an ${runners}-runner ${rType} race${raceContext}. The automated recommendation of ${recRating ?? "—"} pts (${recSign}${recChange ?? 0}) was adjusted by handicapper discretion to ${finalRating ?? "—"} pts (${finalSign}${finalChange ?? 0})${reasonNote}.`;
     }
 
-    if (pl === 4) {
-      return `${name} finished 4th in a ${runners}-horse ${rType} race. 4th is the reference position, so the rating does not change. No starter, veterinary or incident remark applies.`;
+    // 2. Unplaced / Did not finish
+    if (!pl || pl < 1 || activeHorse.ratingStatus === "NOT_RATED") {
+      return `${name} did not record an official finishing position in this ${rType} race${raceContext} and was not rated.`;
     }
 
+    const plText = `${pl}${getOrdinal(pl)}`;
+
+    // 3. Not eligible (minimum 3 runs)
+    if (
+      activeHorse.ratingStatus === "NOT_ELIGIBLE" ||
+      (activeHorse.previousRuns != null && activeHorse.previousRuns < 3 && pl !== 1)
+    ) {
+      return `${name} finished ${plText} in an ${runners}-runner ${rType} race${raceContext}. The horse is not yet eligible for an official rating adjustment, having completed ${activeHorse.previousRuns ?? 0} previous run(s) against the required minimum of 3.`;
+    }
+
+    // 4. Needs Handicapper
+    if (activeHorse.ratingStatus === "NEEDS_HANDICAPPER") {
+      const stepMsg = reasons[reasons.length - 1] || "";
+      const cleanMsg = typeof stepMsg === "string" ? stepMsg.replace(/^Step \d+:\s*/i, "").trim() : "";
+      return `${name} finished ${plText} in an ${runners}-runner ${rType} race${raceContext}. Automatic rating requires handicapper review${cleanMsg ? `: ${cleanMsg}` : "."}`;
+    }
+
+    // 5. Constant condition
+    const constantStep = findReason("Step 4:");
+    if (activeHorse.ratingStatus === "UNCHANGED" || constantStep) {
+      return `${name} finished ${plText} in an ${runners}-runner ${rType} race${raceContext}. An official constant condition applies, maintaining the rating unchanged at ${curr ?? finalRating} pts.`;
+    }
+
+    // Reference position (benchmark) & step differences
+    const step7 = findReason("Step 7:");
+    let ref = runners >= 8 ? 4 : (runners >= 4 ? 3 : null);
+    let rawChange = null;
+    if (step7) {
+      const refMatch = step7.match(/reference position (\d+)/i);
+      if (refMatch) ref = parseInt(refMatch[1], 10);
+      const stepMatch = step7.match(/(-?\d+)\s+step\(s\)\s*=\s*(-?\d+(?:\.\d+)?)/i);
+      if (stepMatch) rawChange = parseFloat(stepMatch[2]);
+    }
+    if (ref == null && pl) {
+      ref = runners >= 8 ? 4 : 3;
+    }
+
+    const step6 = findReason("Step 6:");
+    let stepVal = null;
+    if (step6) {
+      const svMatch = step6.match(/step value\s+([\d.]+)/i);
+      if (svMatch) stepVal = parseFloat(svMatch[1]);
+    }
+
+    const hasException = reasons.some(
+      (r) => typeof r === "string" && (r.includes("exception found") || r.includes("exception from Step 5 applies"))
+    );
+    const isTermsNoDecrease = reasons.some(
+      (r) => typeof r === "string" && r.includes("Terms race, not performed to potential, so no decrease")
+    );
+    const isCapApplied = reasons.some(
+      (r) => typeof r === "string" && r.includes("decrease limited to")
+    );
+
+    // 6. Benchmark position (e.g. 4th place)
+    if (ref != null && pl === ref) {
+      return `${name} finished ${plText} in an ${runners}-runner ${rType} race${raceContext}. As ${plText} is the designated benchmark reference position, no adjustment was applied, keeping the rating unchanged at ${curr ?? finalRating} pts.`;
+    }
+
+    // 7. Race Winner (1st place)
     if (pl === 1) {
-      return `${name} finished 1st (winner) in a ${runners}-horse ${rType} race. Winner receives rating increase based on cumulative coefficients and weight carried.`;
+      const beatHigher = reasons.some((r) => typeof r === "string" && r.includes("beat a higher-rated horse"));
+      const weightAdj = findReason("Step 9:");
+      let note = "";
+      if (beatHigher) note += " after defeating higher-rated opposition";
+      if (weightAdj && !weightAdj.includes("+0")) note += " with weight performance factored in";
+      const chgSign = recChange != null && recChange >= 0 ? "+" : "";
+      return `${name} won the race (1st place) in an ${runners}-runner ${rType} race${raceContext}${note}. Awarded a ${chgSign}${recChange ?? 0} pt adjustment, moving the rating from ${curr ?? "—"} to ${finalRating ?? recRating ?? "—"} pts.`;
     }
 
-    if (activeHorse.exception && activeHorse.exception !== "None") {
-      return `${name} finished ${pl}${getOrdinal(
-        pl
-      )} in a ${runners}-horse ${rType} race. Exception condition noted (${
-        activeHorse.exception
-      }): rating evaluated with steward discretion safeguards.`;
+    // 8. Finished ahead of benchmark (e.g. 2nd or 3rd)
+    if (ref != null && pl < ref) {
+      const positionsAhead = ref - pl;
+      const chgSign = recChange != null && recChange >= 0 ? "+" : "";
+      return `${name} finished ${plText} in an ${runners}-runner ${rType} race${raceContext}, placing ${positionsAhead} position${positionsAhead > 1 ? "s" : ""} ahead of the ${ref}${getOrdinal(ref)}-place benchmark. Awarded a ${chgSign}${recChange ?? 0} pt increase, adjusting the rating from ${curr ?? "—"} to ${finalRating ?? recRating ?? "—"} pts.`;
     }
 
-    if (activeHorse.reasonsExplanation) {
-      return `${name} finished ${pl}${getOrdinal(
-        pl
-      )} in a ${runners}-horse ${rType} race. ${activeHorse.reasonsExplanation}`;
+    // 9. Finished behind benchmark (e.g. 8th in 11 runners)
+    if (ref != null && pl > ref) {
+      const positionsBehind = pl - ref;
+
+      if (hasException) {
+        return `${name} finished ${plText} in an ${runners}-runner ${rType} race${raceContext}, ${positionsBehind} position${positionsBehind > 1 ? "s" : ""} behind the ${ref}${getOrdinal(ref)}-place benchmark. An official race exception was recorded, protecting the rating from downward revision at ${curr ?? finalRating} pts.`;
+      }
+
+      if (isTermsNoDecrease) {
+        return `${name} finished ${plText} in an ${runners}-runner Terms race${raceContext}, ${positionsBehind} position${positionsBehind > 1 ? "s" : ""} behind the ${ref}${getOrdinal(ref)}-place benchmark. Under Terms race conditions, ratings are protected against downward revision, remaining at ${curr ?? finalRating} pts.`;
+      }
+
+      if (isCapApplied) {
+        const rawPts = rawChange != null ? Math.round(rawChange) : (stepVal ? Math.round(-positionsBehind * stepVal) : null);
+        const perPos = stepVal ? ` (-${stepVal} pts per position)` : "";
+        const rawNote = rawPts != null ? ` (calculated at ${rawPts} pts${perPos})` : "";
+        return `${name} finished ${plText} in an ${runners}-runner ${rType} race${raceContext}, ${positionsBehind} position${positionsBehind > 1 ? "s" : ""} behind the ${ref}${getOrdinal(ref)}-place benchmark. The downward adjustment${rawNote} was capped at -4 pts under standard decrease limits, adjusting the rating from ${curr ?? "—"} to ${finalRating ?? recRating ?? "—"} pts.`;
+      }
+
+      const drop = Math.abs(recChange ?? 0);
+      return `${name} finished ${plText} in an ${runners}-runner ${rType} race${raceContext}, ${positionsBehind} position${positionsBehind > 1 ? "s" : ""} behind the ${ref}${getOrdinal(ref)}-place benchmark. With a -${drop} pt adjustment applied, the rating moves from ${curr ?? "—"} to ${finalRating ?? recRating ?? "—"} pts.`;
     }
 
-    return `${name} finished ${pl}${getOrdinal(
-      pl
-    )} in a ${runners}-horse ${rType} race. Rating is calculated relative to median placing reference.`;
+    // 10. Fallback summary
+    const chgStr = recChange != null ? `${recChange >= 0 ? "+" : ""}${recChange} pts` : "no change";
+    return `${name} finished ${plText} in an ${runners}-runner ${rType} race${raceContext}. Rating evaluated relative to the benchmark placing with an adjustment of ${chgStr}, setting the rating to ${finalRating ?? recRating ?? "—"} pts.`;
   }, [activeHorse, currentRace, currentHorses]);
 
   const overriddenCount = currentHorses.filter((h) => h.overridden).length;
@@ -508,19 +613,6 @@ function RatingEngineContent() {
         </div>
 
         <div className="flex items-center gap-3">
-          {isHandicapperOrAdmin && (
-            <button
-              type="button"
-              onClick={handleAutoRate}
-              disabled={autoRating || loading}
-              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg bg-[#2563EB] hover:bg-[#1D4ED8] text-white text-xs font-semibold shadow-xs transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
-              title="Validate and re-calculate ratings against approved coefficient table"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${autoRating ? "animate-spin" : ""}`} />
-              <span>{autoRating ? "Validating & Auto-Rating..." : "Auto-Rate & Validate"}</span>
-            </button>
-          )}
-
           {isViewer && (
             <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 text-slate-600 text-xs font-semibold border border-slate-200">
               <Lock className="w-3.5 h-3.5 text-slate-500" /> Read-Only Mode (Viewer)
@@ -529,7 +621,7 @@ function RatingEngineContent() {
         </div>
       </div>
 
-      {/* 1. Files for this race day Card (Prototype Design - 6 Source Cards) */}
+      {/* 1. Files for this race day Card (6 Source Cards) */}
       <div className="bg-white rounded-xl border border-[#E2E8F0] shadow-[0_1px_2px_rgba(15,23,42,0.06)] p-6">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 pb-4 border-b border-[#EEF2F6]">
           <div>
@@ -537,7 +629,7 @@ function RatingEngineContent() {
               Files for this race day
             </h2>
             <p className="text-xs text-slate-500 mt-0.5">
-              Ratings calculate automatically from master data, race results, and approved coefficient rules
+              Status of race day data files and steward reports. Ratings calculate automatically once primary race data is processed.
             </p>
           </div>
         </div>
@@ -552,7 +644,7 @@ function RatingEngineContent() {
             return (
               <div
                 key={idx}
-                className="p-3 rounded-lg border border-[#E2E8F0] bg-slate-50/50 flex flex-col justify-between min-h-[125px] hover:border-slate-300 transition-colors"
+                className="p-3 rounded-lg border border-[#E2E8F0] bg-slate-50/50 flex flex-col justify-between min-h-[100px] transition-all"
               >
                 <div>
                   <div className="flex items-center justify-between gap-1 mb-2">
@@ -583,37 +675,17 @@ function RatingEngineContent() {
                     {file.detail}
                   </div>
                 </div>
-
-                {isHandicapperOrAdmin && (
-                  <Link
-                    href={`/upload?type=${file.fileType}`}
-                    className="mt-2.5 pt-2 border-t border-slate-200/80 inline-flex items-center gap-1 text-[11px] font-semibold text-[#2563EB] hover:text-[#1D4ED8] transition-colors"
-                    title={`Upload or update ${file.name}`}
-                  >
-                    <Upload className="w-3 h-3" />
-                    <span>Upload</span>
-                  </Link>
-                )}
               </div>
             );
           })}
         </div>
 
         {/* Footer lock note & coefficient table info */}
-        <div className="mt-4 pt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 border-t border-slate-100">
+        <div className="mt-4 pt-3 flex items-center justify-between text-xs text-slate-500 border-t border-slate-100">
           <div className="flex items-center gap-1.5">
             <Lock className="w-3.5 h-3.5 text-slate-400" />
             <span>Approved coefficients v1 · locked (51 category & distance rules loaded)</span>
           </div>
-          {isHandicapperOrAdmin && (
-            <Link
-              href="/upload?type=COEFFICIENT"
-              className="text-[#2563EB] hover:underline font-semibold text-[11px] flex items-center gap-1"
-            >
-              <Upload className="w-3 h-3" />
-              <span>Update Coefficient Table</span>
-            </Link>
-          )}
         </div>
       </div>
 
@@ -855,8 +927,17 @@ function RatingEngineContent() {
                 </tr>
               ) : currentHorses.length === 0 ? (
                 <tr>
-                  <td colSpan={11} className="px-5 py-8 text-center text-xs text-slate-400">
-                    No horse data found for this race
+                  <td colSpan={11} className="px-5 py-12 text-center text-slate-500">
+                    <p className="text-sm font-medium">
+                      {races.length === 0
+                        ? "No races found in the database yet."
+                        : "No horse data found for this race."}
+                    </p>
+                    <p className="text-xs text-slate-400 mt-1">
+                      {races.length === 0
+                        ? "Waiting for race data files to be imported by the background worker."
+                        : "Please select another race from the filters above."}
+                    </p>
                   </td>
                 </tr>
               ) : (
