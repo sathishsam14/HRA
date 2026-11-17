@@ -9,7 +9,7 @@ import { applyOverride } from "@/lib/rating-engine/index.js";
 
 export async function POST(request) {
   try {
-    // 1. Enforce RBAC: Admin and Handicapper only. Viewer rejected with 403.
+    // 1. Enforce RBAC: Admin and Handicapper only. Manager rejected with 403.
     const session = await getSession(request);
     await requireRole(["ADMIN", "HANDICAPPER"], session);
 

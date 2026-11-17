@@ -1,6 +1,6 @@
 // middleware.js
 // Next.js Edge-compatible middleware enforcing session authentication
-// on all pages except /login, and server-side read-only enforcement for VIEWER on write APIs.
+// on all pages except /login, and server-side read-only enforcement for MANAGER on write APIs.
 
 import { NextResponse } from "next/server";
 import { jwtVerify } from "jose";
@@ -66,17 +66,17 @@ export async function middleware(request) {
     return NextResponse.redirect(loginUrl);
   }
 
-  // 5. Server-side enforcement: VIEWER is strictly read-only on all write operations
-  // "Viewer is read-only. Every write API (upload, decision, submit) must reject VIEWER on the server, not only hide the buttons."
+  // 5. Server-side enforcement: MANAGER is strictly read-only on all write operations
+  // "Manager is read-only. Every write API (upload, decision, submit) must reject MANAGER on the server, not only hide the buttons."
   const method = request.method.toUpperCase();
   const isWriteMethod = ["POST", "PUT", "PATCH", "DELETE"].includes(method);
 
   if (isWriteMethod && pathname.startsWith("/api/")) {
     // Allow logout for all roles
-    if (pathname !== "/api/auth/logout" && session.role === "VIEWER") {
+    if (pathname !== "/api/auth/logout" && (session.role === "MANAGER" || session.role === "MANAGER")) {
       return NextResponse.json(
         {
-          error: "Forbidden: VIEWER role is read-only and cannot perform write operations",
+          error: "Forbidden: MANAGER role is read-only and cannot perform write operations",
         },
         { status: 403 }
       );

@@ -9,7 +9,7 @@ import readline from "node:readline";
 
 const prisma = new PrismaClient();
 
-const VALID_ROLES = ["ADMIN", "HANDICAPPER", "VIEWER"];
+const VALID_ROLES = ["ADMIN", "HANDICAPPER", "MANAGER", "MANAGER"];
 
 function promptPassword(promptText = "Enter password: ") {
   return new Promise((resolve) => {
@@ -67,7 +67,7 @@ async function main() {
 
   if (!email || !rawRole) {
     console.error("Usage: node scripts/create-user.js <email> <role>");
-    console.error("Valid roles: ADMIN, HANDICAPPER, VIEWER");
+    console.error("Valid roles: ADMIN, HANDICAPPER, MANAGER");
     process.exit(1);
   }
 

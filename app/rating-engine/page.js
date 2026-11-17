@@ -37,7 +37,7 @@ function RatingEngineContent() {
 
   const { user } = useAuth();
   const isHandicapperOrAdmin = user?.role === "HANDICAPPER" || user?.role === "ADMIN";
-  const isViewer = user?.role === "VIEWER";
+  const isManager = user?.role === "MANAGER";
 
   // Filter state
   const [venueFilter, setVenueFilter] = useState("ALL");
@@ -613,9 +613,9 @@ function RatingEngineContent() {
         </div>
 
         <div className="flex items-center gap-3">
-          {isViewer && (
+          {isManager && (
             <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 text-slate-600 text-xs font-semibold border border-slate-200">
-              <Lock className="w-3.5 h-3.5 text-slate-500" /> Read-Only Mode (Viewer)
+              <Lock className="w-3.5 h-3.5 text-slate-500" /> Read-Only Mode (Manager)
             </div>
           )}
         </div>

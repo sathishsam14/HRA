@@ -1,5 +1,5 @@
 // app/api/upload/route.js
-// API route for handling file uploads (Admin & Handicapper only; Viewer blocked with 403).
+// API route for handling file uploads (Admin & Handicapper only; Manager blocked with 403).
 
 import { NextResponse } from "next/server";
 import { getSession, requireRole } from "@/lib/auth";
@@ -41,7 +41,7 @@ export async function GET(request) {
 
 export async function POST(request) {
   try {
-    // 1. Enforce RBAC: Admin and Handicapper only; Viewer refused with 403
+    // 1. Enforce RBAC: Admin and Handicapper only; Manager refused with 403
     const session = await getSession(request);
     await requireRole(["ADMIN", "HANDICAPPER"], session);
 

@@ -1,6 +1,6 @@
 // prisma/seed-users.js
-// Seeds the 3 required RBAC users (admin, handicapper, viewer)
-// Passwords MUST be read from .env (SEED_ADMIN_PASSWORD, SEED_HANDICAPPER_PASSWORD, SEED_VIEWER_PASSWORD).
+// Seeds the 3 required RBAC users (admin, handicapper, manager)
+// Passwords MUST be read from .env (SEED_ADMIN_PASSWORD, SEED_HANDICAPPER_PASSWORD, SEED_MANAGER_PASSWORD).
 // Never hard-code passwords in code.
 
 import { PrismaClient } from "@prisma/client";
@@ -13,11 +13,11 @@ async function main() {
 
   const adminPassword = process.env.SEED_ADMIN_PASSWORD;
   const handicapperPassword = process.env.SEED_HANDICAPPER_PASSWORD;
-  const viewerPassword = process.env.SEED_VIEWER_PASSWORD;
+  const managerPassword = process.env.SEED_MANAGER_PASSWORD || process.env.SEED_MANAGER_PASSWORD;
 
-  if (!adminPassword || !handicapperPassword || !viewerPassword) {
+  if (!adminPassword || !handicapperPassword || !managerPassword) {
     throw new Error(
-      "Missing required seed passwords in .env. Please set SEED_ADMIN_PASSWORD, SEED_HANDICAPPER_PASSWORD, and SEED_VIEWER_PASSWORD."
+      "Missing required seed passwords in .env. Please set SEED_ADMIN_PASSWORD, SEED_HANDICAPPER_PASSWORD, and SEED_MANAGER_PASSWORD."
     );
   }
 
@@ -35,10 +35,10 @@ async function main() {
       password: handicapperPassword,
     },
     {
-      email: "viewer@btc.com",
-      name: "Official Viewer",
-      role: "VIEWER",
-      password: viewerPassword,
+      email: "manager@btc.com",
+      name: "Official Manager",
+      role: "MANAGER",
+      password: managerPassword,
     },
   ];
 

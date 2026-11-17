@@ -2,7 +2,7 @@
 - JavaScript only (no TypeScript). Next.js App Router. No src folder. Tailwind.
 - Database: PostgreSQL through Prisma. Never delete rows (use an active flag). AuditLog is append-only.
 - Five screens only: Login, Dashboard, Rating Engine, MIS Report, Audit Trail.
-- Roles: Admin, Handicapper, Viewer. Viewer is read-only, enforced on the server, not only in the UI.
+- Roles: Admin, Handicapper, Manager. Manager is read-only, enforced on the server, not only in the UI.
 - Ratings are calculated automatically. There is no Generate button.
 - The Handicapper keeps the recommendation or overrides it. An override needs: final change, reason, user, time. Every override goes to the Audit Trail.
 - Rating logic lives only in lib/rating-engine. Never rewrite it. All rule values are in lib/rating-engine/config.js.

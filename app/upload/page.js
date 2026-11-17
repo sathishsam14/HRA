@@ -137,13 +137,13 @@ function UploadContent() {
   }, []);
 
   useEffect(() => {
-    if (user?.role !== "VIEWER") {
+    if (user?.role !== "MANAGER" && user?.role !== "MANAGER") {
       loadRecentFiles();
     }
   }, [user, loadRecentFiles]);
 
-  // Viewer role is strictly prohibited from opening the upload screen
-  if (user?.role === "VIEWER") {
+  // Manager role is strictly prohibited from opening the upload screen
+  if (user?.role === "MANAGER" || user?.role === "MANAGER") {
     return (
       <div className="max-w-2xl mx-auto mt-12 bg-white rounded-xl border border-red-200 p-8 shadow-sm text-center">
         <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center mx-auto text-red-600 mb-4">
@@ -151,7 +151,7 @@ function UploadContent() {
         </div>
         <h2 className="text-lg font-bold text-slate-900">Access Restricted</h2>
         <p className="text-sm text-slate-600 mt-2">
-          Your account has the <span className="font-semibold text-slate-800">VIEWER</span> role, which is read-only.
+          Your account has the <span className="font-semibold text-slate-800">MANAGER</span> role, which is read-only.
           File uploads and modifications are restricted to Administrators and Handicappers.
         </p>
         <div className="mt-6">

@@ -17,7 +17,7 @@ datasource db {
 enum Role {
   ADMIN
   HANDICAPPER
-  VIEWER
+  MANAGER
 }
 
 enum RaceType {
