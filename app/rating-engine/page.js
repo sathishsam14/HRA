@@ -130,8 +130,8 @@ function RatingEngineContent() {
     checkExistingUploads();
   }, []);
 
-  // Fetch races with client-side caching (SWR: render cache immediately without blocking reload)
-  const loadRaces = async (forceRefresh = false) => {
+  // Fetch races from server with consistent loading state
+  const loadRaces = async () => {
     const params = new URLSearchParams();
     if (venueFilter !== "ALL") params.set("venue", venueFilter);
     if (dateFilter !== "ALL") params.set("raceDate", dateFilter);
@@ -140,45 +140,8 @@ function RatingEngineContent() {
     if (categoryFilter !== "ALL") params.set("category", categoryFilter);
     if (distanceFilter !== "ALL") params.set("distance", distanceFilter);
 
-    const cacheKey = `hra_cache_races_${params.toString()}`;
-
-    // 1. Check client session cache first
-    let hasCachedData = false;
-    if (!forceRefresh && typeof window !== "undefined") {
-      try {
-        const cachedRaw = sessionStorage.getItem(cacheKey);
-        if (cachedRaw) {
-          const cached = JSON.parse(cachedRaw);
-          if (cached && cached.data && Array.isArray(cached.data.races)) {
-            hasCachedData = true;
-            setFilterOptions(cached.data.filters || {});
-            setRaces(cached.data.races);
-            setLoading(false);
-
-            if (cached.data.races.length > 0) {
-              if (selectedRaceId && cached.data.races.some((r) => r.id === selectedRaceId)) {
-                // Keep selected race
-              } else if (initialRaceParam) {
-                const match = cached.data.races.find(
-                  (r) => String(r.id) === initialRaceParam || String(r.raceNo) === initialRaceParam
-                );
-                setSelectedRaceId(match ? match.id : cached.data.races[0].id);
-              } else {
-                setSelectedRaceId(cached.data.races[0].id);
-              }
-            }
-          }
-        }
-      } catch (cacheErr) {
-        console.warn("Session cache read error:", cacheErr);
-      }
-    }
-
-    // 2. Fetch from server (background revalidation if cached; spinner only on cold start or manual refresh)
     try {
-      if (!hasCachedData || forceRefresh) {
-        setLoading(true);
-      }
+      setLoading(true);
       setError(null);
 
       const res = await fetch(`/api/rating-engine/races?${params.toString()}`);
@@ -187,15 +150,6 @@ function RatingEngineContent() {
       }
 
       const data = await res.json();
-
-      // Update cache
-      if (typeof window !== "undefined") {
-        try {
-          sessionStorage.setItem(cacheKey, JSON.stringify({ data, timestamp: Date.now() }));
-        } catch (saveErr) {
-          console.warn("Session cache save error:", saveErr);
-        }
-      }
 
       setFilterOptions(
         data.filters || {
@@ -229,9 +183,7 @@ function RatingEngineContent() {
       }
     } catch (err) {
       console.error("Error loading races:", err);
-      if (!hasCachedData) {
-        setError(err.message || "Failed to load races");
-      }
+      setError(err.message || "Failed to load races");
     } finally {
       setLoading(false);
     }
@@ -923,6 +875,19 @@ function RatingEngineContent() {
                       <Loader2 className="w-4 h-4 animate-spin text-[#12306B]" />
                       <span>Loading race horses...</span>
                     </div>
+                  </td>
+                </tr>
+              ) : error ? (
+                <tr>
+                  <td colSpan={11} className="px-5 py-12 text-center text-slate-500">
+                    <p className="text-sm font-semibold text-red-600">{error}</p>
+                    <button
+                      type="button"
+                      onClick={() => loadRaces()}
+                      className="mt-3 px-3 py-1.5 bg-[#12306B] text-white text-xs font-semibold rounded-lg hover:bg-[#0E2452] transition cursor-pointer"
+                    >
+                      Retry
+                    </button>
                   </td>
                 </tr>
               ) : currentHorses.length === 0 ? (

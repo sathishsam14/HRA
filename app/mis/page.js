@@ -1,6 +1,6 @@
 "use client";
 
-import React, { Suspense, useState, useEffect, useMemo, useCallback } from "react";
+import React, { Suspense, useState, useEffect, useMemo, useCallback, useRef } from "react";
 import ProtectedPage from "@/components/ProtectedPage";
 import AppShell from "@/components/AppShell";
 import {
@@ -103,6 +103,30 @@ function MisContent() {
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
   const [selectedRowId, setSelectedRowId] = useState(null);
+
+  const paginationScrollRef = useRef(null);
+
+  // Auto-scroll the horizontal pagination track so the active page button remains centered.
+  // Using container.scrollTo directly ensures ONLY the pagination track scrolls,
+  // preventing ancestor containers, the table card, or the page from shifting.
+  useEffect(() => {
+    if (paginationScrollRef.current) {
+      const container = paginationScrollRef.current;
+      const activeBtn = container.querySelector(
+        `[data-page="${currentPage}"]`
+      );
+      if (activeBtn) {
+        const scrollTarget =
+          activeBtn.offsetLeft -
+          container.clientWidth / 2 +
+          activeBtn.clientWidth / 2;
+        container.scrollTo({
+          left: Math.max(0, scrollTarget),
+          behavior: "smooth",
+        });
+      }
+    }
+  }, [currentPage]);
 
   // Fetch MIS data with client-side caching (render cache immediately without blocking reload)
   const fetchMisData = useCallback(async (forceRefresh = false) => {
@@ -869,14 +893,14 @@ function MisContent() {
 
         {/* Server-side Pagination Bar */}
         <div className="px-6 py-4 bg-white border-t border-[#E2E8F0] flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-600">
-          <div>
+          <div className="flex-shrink-0">
             Showing <strong>{rows.length > 0 ? startIndex + 1 : 0}</strong> to{" "}
             <strong>{Math.min(startIndex + rows.length, totalCount)}</strong> of{" "}
             <strong>{totalCount}</strong> entries
           </div>
 
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-4 flex-shrink-0">
+            <div className="flex items-center gap-1.5 flex-shrink-0">
               <span>Rows per page:</span>
               <select
                 value={rowsPerPage}
@@ -889,29 +913,41 @@ function MisContent() {
                 <option value={10}>10</option>
                 <option value={25}>25</option>
                 <option value={50}>50</option>
+                <option value={75}>75</option>
                 <option value={100}>100</option>
               </select>
             </div>
 
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-1 flex-shrink-0">
               <button
                 type="button"
                 onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-                disabled={currentPage === 1 || loading}
-                className="p-1 rounded border border-slate-300 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 cursor-pointer"
+                disabled={currentPage <= 1 || loading}
+                className="flex-shrink-0 p-1 rounded border border-slate-300 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 cursor-pointer"
+                title="Previous page"
               >
                 <ChevronLeft className="w-4 h-4" />
               </button>
 
-              {Array.from({ length: totalPages }, (_, i) => i + 1)
-                .slice(0, 5)
-                .map((pageNo) => (
+              {/* Fixed-width horizontal side-scroll track for page numbers */}
+              <div
+                ref={paginationScrollRef}
+                onWheel={(e) => {
+                  if (paginationScrollRef.current && e.deltaY !== 0) {
+                    paginationScrollRef.current.scrollLeft += e.deltaY;
+                  }
+                }}
+                className="flex items-center gap-1 overflow-x-auto w-[280px] sm:w-[320px] py-1 px-1 scroll-smooth flex-shrink-0"
+                style={{ scrollbarWidth: "thin", scrollbarColor: "#CBD5E1 transparent" }}
+              >
+                {Array.from({ length: totalPages }, (_, i) => i + 1).map((pageNo) => (
                   <button
                     key={pageNo}
+                    data-page={pageNo}
                     type="button"
                     onClick={() => setCurrentPage(pageNo)}
                     disabled={loading}
-                    className={`w-7 h-7 rounded text-xs font-semibold transition-colors cursor-pointer ${
+                    className={`flex-shrink-0 min-w-[28px] h-7 px-1.5 rounded text-xs font-semibold transition-colors cursor-pointer ${
                       currentPage === pageNo
                         ? "bg-[#12306B] text-white"
                         : "border border-slate-300 text-slate-700 hover:bg-slate-50"
@@ -920,12 +956,14 @@ function MisContent() {
                     {pageNo}
                   </button>
                 ))}
+              </div>
 
               <button
                 type="button"
                 onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
-                disabled={currentPage === totalPages || loading}
-                className="p-1 rounded border border-slate-300 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 cursor-pointer"
+                disabled={currentPage >= totalPages || loading}
+                className="flex-shrink-0 p-1 rounded border border-slate-300 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 cursor-pointer"
+                title="Next page"
               >
                 <ChevronRight className="w-4 h-4" />
               </button>

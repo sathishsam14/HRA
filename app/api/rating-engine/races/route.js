@@ -68,6 +68,9 @@ export async function GET(request) {
       if (!isNaN(d.getTime())) {
         where.raceDate = d;
       }
+    } else if (allRaces.length > 0) {
+      // Default to latest race date so the query returns in ~1s instead of timing out scanning 1,500+ historical races
+      where.raceDate = allRaces[0].raceDate;
     }
     if (raceTypeFilter && raceTypeFilter !== "ALL") {
       const upperType = raceTypeFilter.toUpperCase();
@@ -83,9 +86,10 @@ export async function GET(request) {
     if (distanceFilter && distanceFilter !== "ALL") where.distance = parseInt(distanceFilter, 10);
     if (statusFilter && statusFilter !== "ALL") where.status = statusFilter;
 
-    // 3. Fetch matching races with full runner details
+    // 3. Fetch matching races with full runner details (max 50 to guarantee fast response under Vercel serverless limits)
     const races = await db.race.findMany({
       where,
+      take: 50,
       include: {
         entries: {
           include: {
