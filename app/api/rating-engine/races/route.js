@@ -21,8 +21,10 @@ export async function GET(request) {
     const distanceFilter = searchParams.get("distance");
     const statusFilter = searchParams.get("status");
 
-    // 1. Fetch all distinct filter options across races in DB
+    // 1. Fetch distinct filter options across races in DB (default: only OPEN races for current race day)
+    const targetStatus = statusFilter && statusFilter !== "ALL" ? statusFilter : "OPEN";
     const allRaces = await db.race.findMany({
+      where: statusFilter === "ALL" ? {} : { status: targetStatus },
       select: {
         venue: true,
         raceDate: true,
@@ -84,7 +86,11 @@ export async function GET(request) {
     }
     if (categoryFilter && categoryFilter !== "ALL") where.category = categoryFilter;
     if (distanceFilter && distanceFilter !== "ALL") where.distance = parseInt(distanceFilter, 10);
-    if (statusFilter && statusFilter !== "ALL") where.status = statusFilter;
+    if (statusFilter === "ALL") {
+      // User explicitly requested all statuses
+    } else {
+      where.status = targetStatus;
+    }
 
     // 3. Fetch matching races with full runner details (max 50 to guarantee fast response under Vercel serverless limits)
     const races = await db.race.findMany({
@@ -140,6 +146,12 @@ export async function GET(request) {
           ? decision.finalRating
           : (rating?.recommendedRating ?? horse.currentRating ?? null);
 
+        // Previous rating history baseline entering this race
+        const startRating =
+          rating?.recommendedRating != null && rating?.recommendedChange != null
+            ? rating.recommendedRating - rating.recommendedChange
+            : (horse.currentRating ?? null);
+
         return {
           id: entry.id,
           entryId: entry.id,
@@ -148,7 +160,8 @@ export async function GET(request) {
           horseName: horse.name || "Unknown Horse",
           sexCategory: horse.sexCategory || "—",
           previousRuns: horse.previousRuns ?? 0,
-          currentRating: horse.currentRating ?? null,
+          currentRating: startRating,
+          startRating: startRating,
           placing: entry.placing ?? null,
           timing: entry.timing || "—",
           verdict: entry.verdict || "—",

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { Suspense, useState, useEffect, useMemo, useRef } from "react";
+import React, { Suspense, useState, useEffect, useMemo, useRef, useCallback } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import ProtectedPage from "@/components/ProtectedPage";
@@ -21,6 +21,8 @@ import {
   Send,
   SlidersHorizontal,
   Loader2,
+  Upload,
+  Flag,
 } from "lucide-react";
 
 function getOrdinal(n) {
@@ -92,43 +94,94 @@ function RatingEngineContent() {
 
   // Track uploaded files status in rating engine
   const [uploadedFilesState, setUploadedFilesState] = useState({
+    RACE: { uploaded: false, fileName: "", detail: "Current race day results (.xlsx)" },
+    STARTER: { uploaded: false, fileName: "", detail: "Optional (.docx, .pdf, .xlsx)" },
+    VETERINARY: { uploaded: false, fileName: "", detail: "Optional (.docx, .pdf, .xlsx)" },
+    INCIDENT: { uploaded: false, fileName: "", detail: "Optional (.docx, .pdf, .xlsx)" },
     HISTORY: { uploaded: false, fileName: "", detail: "BWM-BSM 22-26-Consolidated.xlsx" },
     ACTIVE_HORSE: { uploaded: false, fileName: "", detail: "Active Horse Previous perfomance report.xlsx" },
     COEFFICIENT: { uploaded: false, fileName: "", detail: "Coefficient_Table.xlsx (51 rules)" },
-    STARTER: { uploaded: false, fileName: "", detail: "Optional" },
-    VETERINARY: { uploaded: false, fileName: "", detail: "Optional" },
-    INCIDENT: { uploaded: false, fileName: "", detail: "Optional" },
   });
 
-  // Check existing upload records on mount
-  useEffect(() => {
-    async function checkExistingUploads() {
-      try {
-        const res = await fetch("/api/upload");
-        if (res.ok) {
-          const data = await res.json();
-          const files = data.files || [];
-          setUploadedFilesState((prev) => {
-            const next = { ...prev };
-            for (const f of files) {
-              const t = f.fileType;
-              if (next[t] && !next[t].uploaded) {
-                next[t] = {
-                  uploaded: f.status === "PROCESSED" || f.status === "SKIPPED",
-                  fileName: f.fileName,
-                  detail: f.fileName,
-                };
-              }
+  const [uploadingFileType, setUploadingFileType] = useState(null);
+
+  // Check existing upload records on mount and after uploads
+  const checkExistingUploads = useCallback(async () => {
+    try {
+      const res = await fetch("/api/upload");
+      if (res.ok) {
+        const data = await res.json();
+        const files = data.files || [];
+        setUploadedFilesState((prev) => {
+          const next = { ...prev };
+          for (const f of files) {
+            const t = f.fileType;
+            if (next[t]) {
+              next[t] = {
+                uploaded: f.status === "PROCESSED" || f.status === "SKIPPED",
+                fileName: f.name || f.fileName,
+                detail: f.name || f.fileName,
+              };
             }
-            return next;
-          });
-        }
-      } catch (err) {
-        console.warn("Could not check uploaded files status:", err);
+          }
+          return next;
+        });
       }
+    } catch (err) {
+      console.warn("Could not check uploaded files status:", err);
     }
-    checkExistingUploads();
   }, []);
+
+  useEffect(() => {
+    checkExistingUploads();
+  }, [checkExistingUploads]);
+
+  // Handle direct file upload from race day cards and trigger auto-rating
+  const handleCardFileUpload = async (fileType, file) => {
+    if (!file || !isHandicapperOrAdmin) return;
+
+    try {
+      setUploadingFileType(fileType);
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("fileType", fileType);
+
+      const res = await fetch("/api/upload", {
+        method: "POST",
+        body: formData,
+      });
+
+      const data = await res.json();
+
+      if (!res.ok || !data.ok) {
+        throw new Error(data.message || data.error || "Failed to process file");
+      }
+
+      const fileLabel =
+        fileType === "RACE"
+          ? "Current Race Data"
+          : fileType === "STARTER"
+          ? "Starter Report"
+          : fileType === "VETERINARY"
+          ? "Veterinary Report"
+          : fileType === "INCIDENT"
+          ? "Incident Report"
+          : fileType;
+
+      setToastMessage(
+        `${fileLabel} uploaded successfully! Auto-rating and exceptions applied.`
+      );
+      setTimeout(() => setToastMessage(""), 6000);
+
+      await checkExistingUploads();
+      await loadRaces();
+    } catch (err) {
+      console.error("Direct upload error:", err);
+      alert(err.message || "An error occurred during file upload.");
+    } finally {
+      setUploadingFileType(null);
+    }
+  };
 
   // Fetch races from server with consistent loading state
   const loadRaces = async () => {
@@ -249,13 +302,14 @@ function RatingEngineContent() {
 
   const isRaceReviewed = currentRace?.status === "REVIEWED";
 
-  // Race files state matching the 3 primary files + 3 steward reports (6 cards)
+  // Race files state matching the race day files + steward reports + baseline master (7 cards)
   const raceFiles = useMemo(() => {
     const hasStarter = currentHorses.some((h) => h.starterRemark) || uploadedFilesState.STARTER.uploaded;
     const hasVet = currentHorses.some((h) => h.veterinaryRemark) || uploadedFilesState.VETERINARY.uploaded;
     const hasIncident = currentHorses.some((h) => h.incidentRemark) || uploadedFilesState.INCIDENT.uploaded;
 
-    const isMasterDone = uploadedFilesState.HISTORY.uploaded || !!currentRace;
+    const isCurrentRaceDone = uploadedFilesState.RACE.uploaded || (currentRace && currentRace.status === "OPEN");
+    const isMasterDone = uploadedFilesState.HISTORY.uploaded;
     const isPrevHistoryDone = uploadedFilesState.ACTIVE_HORSE.uploaded;
     const isCoeffDone = uploadedFilesState.COEFFICIENT.uploaded;
 
@@ -266,14 +320,18 @@ function RatingEngineContent() {
         status: isMasterDone ? "Received" : "Not uploaded",
         detail: uploadedFilesState.HISTORY.fileName || "BWM-BSM 22-26-Consolidated.xlsx",
         icon: Database,
+        accept: ".xlsx,.xls",
+        hint: "Consolidated historical race archive",
         isPrimary: true,
       },
       {
         name: "Previous Race History",
         fileType: "ACTIVE_HORSE",
         status: isPrevHistoryDone ? "Received" : "Not uploaded",
-        detail: uploadedFilesState.ACTIVE_HORSE.fileName || "Active Horse Previous perfomance report.xlsx",
+        detail: uploadedFilesState.ACTIVE_HORSE.fileName || "Active Horse Performance Report (.xlsx)",
         icon: History,
+        accept: ".xlsx,.xls",
+        hint: "Active horse previous run counts",
         isPrimary: true,
       },
       {
@@ -282,30 +340,48 @@ function RatingEngineContent() {
         status: isCoeffDone ? "Uploaded" : "Not uploaded",
         detail: uploadedFilesState.COEFFICIENT.fileName || "Coefficient_Table.xlsx (51 rules)",
         icon: SlidersHorizontal,
+        accept: ".xlsx,.xls",
+        hint: "Approved category & distance step values",
+        isPrimary: true,
+      },
+      {
+        name: "Current Race History",
+        fileType: "RACE",
+        status: isCurrentRaceDone ? "Received" : "Not uploaded",
+        detail: uploadedFilesState.RACE.fileName || (currentRace ? `${currentRace.venue} · ${currentRace.raceDate}` : "Current race day results (.xlsx)"),
+        icon: Flag,
+        accept: ".xlsx,.xls",
+        hint: "Current race entries & placings",
         isPrimary: true,
       },
       {
         name: "Starter Report",
         fileType: "STARTER",
         status: hasStarter ? "Uploaded" : "Not uploaded",
-        detail: uploadedFilesState.STARTER.fileName || (currentRace && hasStarter ? `starter_${currentRace.raceNo}.docx` : "Optional"),
+        detail: uploadedFilesState.STARTER.fileName || (currentRace && hasStarter ? `starter_${currentRace.raceNo}` : "Optional (.docx, .pdf, .xlsx)"),
         icon: FileText,
+        accept: ".xlsx,.xls,.docx,.pdf",
+        hint: "Starter observations & delays",
         isPrimary: false,
       },
       {
-        name: "Wordinary / Veterinary Report",
+        name: "Veterinary Report",
         fileType: "VETERINARY",
         status: hasVet ? "Uploaded" : "Not uploaded",
-        detail: uploadedFilesState.VETERINARY.fileName || (currentRace && hasVet ? `vet_${currentRace.raceNo}.pdf` : "Optional"),
+        detail: uploadedFilesState.VETERINARY.fileName || (currentRace && hasVet ? `vet_${currentRace.raceNo}` : "Optional (.docx, .pdf, .xlsx)"),
         icon: FileText,
+        accept: ".xlsx,.xls,.docx,.pdf",
+        hint: "Clinical remarks & lameness",
         isPrimary: false,
       },
       {
         name: "Incident Report",
         fileType: "INCIDENT",
         status: hasIncident ? "Uploaded" : "Not uploaded",
-        detail: uploadedFilesState.INCIDENT.fileName || (currentRace && hasIncident ? `incident_${currentRace.raceNo}.docx` : "Optional"),
+        detail: uploadedFilesState.INCIDENT.fileName || (currentRace && hasIncident ? `incident_${currentRace.raceNo}` : "Optional (.docx, .pdf, .xlsx)"),
         icon: AlertTriangle,
+        accept: ".xlsx,.xls,.docx,.pdf",
+        hint: "Steward & interference remarks",
         isPrimary: false,
       },
     ];
@@ -586,17 +662,18 @@ function RatingEngineContent() {
           </div>
         </div>
 
-        {/* 6 Files Tiles */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mt-4">
+        {/* 7 Files Tiles */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7 gap-3 mt-4">
           {raceFiles.map((file, idx) => {
             const isReceived = file.status === "Received";
             const isUploaded = file.status === "Uploaded";
             const IconComponent = file.icon || Database;
+            const isCurrentUploading = uploadingFileType === file.fileType;
 
             return (
               <div
                 key={idx}
-                className="p-3 rounded-lg border border-[#E2E8F0] bg-slate-50/50 flex flex-col justify-between min-h-[100px] transition-all"
+                className="p-3 rounded-lg border border-[#E2E8F0] bg-slate-50/50 flex flex-col justify-between min-h-[135px] transition-all hover:border-slate-300"
               >
                 <div>
                   <div className="flex items-center justify-between gap-1 mb-2">
@@ -627,6 +704,48 @@ function RatingEngineContent() {
                     {file.detail}
                   </div>
                 </div>
+
+                {/* Direct Upload Trigger */}
+                {isHandicapperOrAdmin && (
+                  <div className="mt-3 pt-2 border-t border-slate-200/60">
+                    <input
+                      type="file"
+                      id={`file-input-${file.fileType}`}
+                      className="hidden"
+                      accept={file.accept}
+                      disabled={uploadingFileType !== null}
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) {
+                          handleCardFileUpload(file.fileType, f);
+                          e.target.value = "";
+                        }
+                      }}
+                    />
+                    <label
+                      htmlFor={`file-input-${file.fileType}`}
+                      className={`inline-flex items-center justify-center gap-1.5 w-full py-1 px-2 rounded-md text-[11px] font-semibold transition-colors cursor-pointer select-none ${
+                        isCurrentUploading
+                          ? "bg-slate-200 text-slate-500 cursor-not-allowed"
+                          : isUploaded || isReceived
+                          ? "bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 shadow-2xs"
+                          : "bg-[#12306B] hover:bg-[#0E2452] text-white shadow-2xs"
+                      }`}
+                    >
+                      {isCurrentUploading ? (
+                        <>
+                          <Loader2 className="w-3 h-3 animate-spin text-slate-600" />
+                          <span>Rating...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Upload className="w-3 h-3" />
+                          <span>{isUploaded || isReceived ? "Update" : "Upload"}</span>
+                        </>
+                      )}
+                    </label>
+                  </div>
+                )}
               </div>
             );
           })}
@@ -856,6 +975,9 @@ function RatingEngineContent() {
                 <th className="px-3 py-3 text-[12px] font-medium uppercase tracking-wider text-[#475569] text-right">
                   CHANGE
                 </th>
+                <th className="px-3 py-3 text-[12px] font-medium uppercase tracking-wider text-[#475569] text-right">
+                  NEW RATING
+                </th>
                 <th className="px-3 py-3 text-[12px] font-medium uppercase tracking-wider text-[#475569]">
                   EXCEPTION
                 </th>
@@ -870,7 +992,7 @@ function RatingEngineContent() {
             <tbody className="divide-y divide-[#EEF2F6]">
               {loading ? (
                 <tr>
-                  <td colSpan={11} className="px-4 py-12 text-center text-xs text-slate-500">
+                  <td colSpan={12} className="px-4 py-12 text-center text-xs text-slate-500">
                     <div className="flex items-center justify-center gap-2">
                       <Loader2 className="w-4 h-4 animate-spin text-[#12306B]" />
                       <span>Loading race horses...</span>
@@ -879,7 +1001,7 @@ function RatingEngineContent() {
                 </tr>
               ) : error ? (
                 <tr>
-                  <td colSpan={11} className="px-5 py-12 text-center text-slate-500">
+                  <td colSpan={12} className="px-5 py-12 text-center text-slate-500">
                     <p className="text-sm font-semibold text-red-600">{error}</p>
                     <button
                       type="button"
@@ -892,15 +1014,15 @@ function RatingEngineContent() {
                 </tr>
               ) : currentHorses.length === 0 ? (
                 <tr>
-                  <td colSpan={11} className="px-5 py-12 text-center text-slate-500">
+                  <td colSpan={12} className="px-5 py-12 text-center text-slate-500">
                     <p className="text-sm font-medium">
                       {races.length === 0
-                        ? "No races found in the database yet."
+                        ? "No current race data uploaded yet."
                         : "No horse data found for this race."}
                     </p>
                     <p className="text-xs text-slate-400 mt-1">
                       {races.length === 0
-                        ? "Waiting for race data files to be imported by the background worker."
+                        ? "Please upload the Current Race History file above to begin auto-rating."
                         : "Please select another race from the filters above."}
                     </p>
                   </td>
@@ -955,16 +1077,11 @@ function RatingEngineContent() {
                       <td className="px-3 py-3 text-sm text-slate-700 whitespace-nowrap tabular-nums">
                         {h.timing || "—"}
                       </td>
-                      <td className="px-3 py-3 text-sm font-bold text-slate-900 text-right whitespace-nowrap tabular-nums">
-                        <div className="flex items-center justify-end gap-1.5">
-                          <span>{h.finalRating ?? "—"}</span>
-                          {h.overridden && (
-                            <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-[#FEF3C7] text-[#92400E] border border-[#FDE68A]">
-                              Overridden
-                            </span>
-                          )}
-                        </div>
+                      {/* Current Rating: Previous rating history baseline */}
+                      <td className="px-3 py-3 text-sm font-semibold text-slate-700 text-right whitespace-nowrap tabular-nums">
+                        {h.currentRating ?? "—"}
                       </td>
+                      {/* Rating Change: Calculated based on finish placing */}
                       <td className="px-3 py-3 text-sm font-bold text-right whitespace-nowrap tabular-nums">
                         <span
                           className={
@@ -977,6 +1094,17 @@ function RatingEngineContent() {
                         >
                           {isPositive ? `+${changeNum}` : changeNum}
                         </span>
+                      </td>
+                      {/* New Rating: Generated final rating */}
+                      <td className="px-3 py-3 text-sm font-bold text-slate-900 text-right whitespace-nowrap tabular-nums">
+                        <div className="flex items-center justify-end gap-1.5">
+                          <span>{h.finalRating ?? "—"}</span>
+                          {h.overridden && (
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-[#FEF3C7] text-[#92400E] border border-[#FDE68A]">
+                              Overridden
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="px-3 py-3 text-xs whitespace-nowrap">
                         {h.ratingStatus === "NEEDS_HANDICAPPER" ? (
