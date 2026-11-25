@@ -84,10 +84,6 @@ export async function GET(request) {
     sheet.columns = [
       { header: "Date & Time (IST)", key: "timestampIst", width: 26 },
       { header: "Action", key: "action", width: 16 },
-      { header: "User", key: "userName", width: 22 },
-      { header: "Role", key: "userRole", width: 14 },
-      { header: "Entity", key: "entity", width: 14 },
-      { header: "Entity ID / Horse", key: "entityId", width: 22 },
       { header: "Recommended Change", key: "recChange", width: 20 },
       { header: "Final Change", key: "finalChange", width: 16 },
       { header: "Overridden", key: "overridden", width: 14 },
@@ -115,10 +111,6 @@ export async function GET(request) {
       sheet.addRow({
         timestampIst: formatIST(log.at),
         action: log.action,
-        userName: log.user?.name || log.user?.email || "System Automated",
-        userRole: log.user?.role || "—",
-        entity: log.entity,
-        entityId: log.entityId,
         recChange: recChange !== null ? (recChange > 0 ? `+${recChange}` : String(recChange)) : "—",
         finalChange: finalChange !== null ? (finalChange > 0 ? `+${finalChange}` : String(finalChange)) : "—",
         overridden: isOverridden ? "Yes" : "No",

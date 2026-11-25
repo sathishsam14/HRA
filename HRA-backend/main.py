@@ -586,6 +586,15 @@ def _build_raw_bsm_mis_rows() -> List[Dict[str, Any]]:
         txt = str(val).strip()
         return txt if txt else default
 
+    def to_num(val):
+        if val is None or (isinstance(val, float) and np.isnan(val)):
+            return None
+        try:
+            f = float(val)
+            return None if np.isnan(f) else f
+        except Exception:
+            return None
+
     rows = []
     for idx, row in df.iterrows():
         raw_date = row.get("Race Date")
@@ -599,20 +608,21 @@ def _build_raw_bsm_mis_rows() -> List[Dict[str, Any]]:
         is_terms = bool(re.search(r"TERMS|MAIDEN|CLASSIC|SWEEPSTAKES|DERBY|OAKS|GUINEAS|CUP|TROPHY|MILLION|PLATE|STAKES|2YO|3YO|4YO|3Y&O|4Y&O", cat, re.I))
         r_type = "TERMS" if is_terms else "HANDICAP"
 
-        cur_rat = row.get("Current Rating")
-        cur_rat_val = None if pd.isna(cur_rat) else int(float(cur_rat))
-        chg_raw = row.get("Change Rating")
-        chg_val = None if (pd.isna(chg_raw) or float(chg_raw) < -100) else int(float(chg_raw))
+        cur_rat_num = to_num(row.get("Current Rating"))
+        cur_rat_val = None if cur_rat_num is None else int(cur_rat_num)
+        chg_num = to_num(row.get("Change Rating"))
+        chg_val = None if (chg_num is None or chg_num < -100) else int(chg_num)
         final_rat_val = (cur_rat_val + chg_val) if (cur_rat_val is not None and chg_val is not None) else cur_rat_val
 
-        dist_raw = row.get("Distance")
-        hw_raw = row.get("Horse Weight")
-        wd_raw = row.get("Weight Declare")
-        wc_raw = row.get("Weight Carried")
-        sg_raw = row.get("Start Gate")
-        pl_raw = row.get("Placing")
-        card_raw = row.get("Card No")
-        pent_raw = row.get("Penetrometer  Reading", row.get("Penetrometer Reading"))
+        dist_num = to_num(row.get("Distance"))
+        hw_num = to_num(row.get("Horse Weight"))
+        wd_num = to_num(row.get("Weight Declare"))
+        wc_num = to_num(row.get("Weight Carried"))
+        sg_num = to_num(row.get("Start Gate"))
+        pl_num = to_num(row.get("Placing"))
+        card_num = to_num(row.get("Card No"))
+        rno_num = to_num(row.get("Race No"))
+        pent_num = to_num(row.get("Penetrometer  Reading", row.get("Penetrometer Reading")))
 
         rows.append({
             "id": f"bsm_{idx}",
@@ -623,22 +633,22 @@ def _build_raw_bsm_mis_rows() -> List[Dict[str, Any]]:
             "raceSeason": s(row.get("Race Season")),
             "raceType": r_type,
             "raceCategory": cat,
-            "raceNo": int(float(row.get("Race No"))) if pd.notna(row.get("Race No")) else "—",
-            "cardNo": int(float(card_raw)) if pd.notna(card_raw) else "—",
-            "distance": f"{int(float(dist_raw))} m" if pd.notna(dist_raw) else "—",
+            "raceNo": int(rno_num) if rno_num is not None else s(row.get("Race No")),
+            "cardNo": int(card_num) if card_num is not None else s(row.get("Card No")),
+            "distance": f"{int(dist_num)} m" if dist_num is not None else s(row.get("Distance")),
             "currentRating": cur_rat_val if cur_rat_val is not None else "—",
             "horseName": s(row.get("Horse Name")),
-            "horseWeight": f"{float(hw_raw)} kg" if pd.notna(hw_raw) else "—",
+            "horseWeight": f"{hw_num} kg" if hw_num is not None else s(row.get("Horse Weight")),
             "shoes": s(row.get("Shoes")),
-            "startGate": int(float(sg_raw)) if pd.notna(sg_raw) else "—",
-            "weightDeclare": f"{float(wd_raw)} kg" if pd.notna(wd_raw) else "—",
+            "startGate": int(sg_num) if sg_num is not None else s(row.get("Start Gate")),
+            "weightDeclare": f"{wd_num} kg" if wd_num is not None else s(row.get("Weight Declare")),
             "jockey": s(row.get("Jockey")),
-            "weightCarried": f"{float(wc_raw)} kg" if pd.notna(wc_raw) else "—",
-            "placing": int(float(pl_raw)) if pd.notna(pl_raw) else "—",
+            "weightCarried": f"{wc_num} kg" if wc_num is not None else s(row.get("Weight Carried")),
+            "placing": int(pl_num) if pl_num is not None else s(row.get("Placing")),
             "timing": s(row.get("Timing")),
             "verdict": s(row.get("Verdict")),
             "trainer": s(row.get("Trainer")),
-            "penetrometer": float(pent_raw) if pd.notna(pent_raw) else "—",
+            "penetrometer": pent_num if pent_num is not None else s(row.get("Penetrometer  Reading", row.get("Penetrometer Reading"))),
             "railing": s(row.get("Railing Position")),
             "starterReport": "—",
             "veterinaryReport": "—",

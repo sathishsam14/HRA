@@ -44,7 +44,7 @@ export async function GET(request) {
     const race = searchParams.get("race");
     const raceNo = searchParams.get("raceNo");
     const horseName = searchParams.get("horseName");
-    const action = searchParams.get("action");
+    const distance = searchParams.get("distance");
 
     const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10));
     const pageSize = Math.min(100, Math.max(1, parseInt(searchParams.get("pageSize") || "20", 10)));
@@ -97,17 +97,17 @@ export async function GET(request) {
       ];
     }
 
-    // 2. Fetch distinct users, totalCount, and logs
-    const [allUsers, totalCount, logs] = await Promise.all([
+    // 2. Fetch distinct users, race distances, and matching logs
+    const [allUsers, allRaces, allMatchingLogs] = await Promise.all([
       db.user.findMany({
         select: { id: true, name: true, role: true },
         orderBy: { name: "asc" },
       }),
-      db.auditLog.count({ where }),
+      db.race.findMany({
+        select: { raceDate: true, raceNo: true, distance: true },
+      }),
       db.auditLog.findMany({
         where,
-        skip,
-        take: pageSize,
         orderBy: { at: "desc" }, // Newest first
         include: {
           user: {
@@ -116,6 +116,33 @@ export async function GET(request) {
         },
       }),
     ]);
+
+    const raceDistanceMap = new Map();
+    const distanceSet = new Set();
+    for (const r of allRaces) {
+      if (r.distance != null) {
+        distanceSet.add(r.distance);
+        const key = `${r.raceDate.toISOString().slice(0, 10)}_${r.raceNo}`;
+        raceDistanceMap.set(key, r.distance);
+      }
+    }
+    const availableDistances = Array.from(distanceSet).sort((a, b) => a - b);
+
+    const parsedDist = distance && distance !== "ALL" ? parseInt(distance, 10) : null;
+    const filteredLogs = parsedDist && !isNaN(parsedDist)
+      ? allMatchingLogs.filter((log) => {
+          const after = log.after || {};
+          const before = log.before || {};
+          const rNo = after.raceNo || before.raceNo;
+          const rDateRaw = after.raceDate || before.raceDate;
+          const rDate = rDateRaw ? String(rDateRaw).slice(0, 10) : null;
+          const dist = after.distance || before.distance || (rDate && rNo ? raceDistanceMap.get(`${rDate}_${rNo}`) : null);
+          return Number(dist) === parsedDist;
+        })
+      : allMatchingLogs;
+
+    const totalCount = filteredLogs.length;
+    const logs = filteredLogs.slice(skip, skip + pageSize);
 
     // Lookup any horse names that aren't stored directly in the log JSON
     const missingHorseEntityIds = Array.from(
@@ -209,7 +236,7 @@ export async function GET(request) {
     return NextResponse.json({
       filters: {
         users: allUsers,
-        actions: ["OVERRIDE", "DECISION_KEPT"],
+        availableDistances,
         availableRaceNos: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
       },
       rows,
