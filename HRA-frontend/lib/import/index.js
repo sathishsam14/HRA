@@ -14,6 +14,7 @@ import mammoth from "mammoth";
 import db from "../db.js";
 import { raceType } from "../rate.js";
 import { rateMeeting, reRateAllOpenRaces } from "../rate.js";
+import { getPythonApiUrl } from "../pythonApi.js";
 import { normalizeHeader, HEADER_ALIASES, matchHeaderKey } from "./aliases.js";
 import { processWordReport } from "../reports/parseReports.js";
 import { saveRaceExtras, getEntryKey } from "../rating/raceExtras.js";
@@ -812,13 +813,12 @@ export async function importFile({ fileName, buffer, fileType, uploadedBy, sourc
 
   // Handle Master History (the BSM file): Python backend owns the master & retraining
   if (fileType === "HISTORY" || fileType === "MASTER") {
-    const PYTHON_BACKEND_URL = process.env.PYTHON_BACKEND_URL || "http://127.0.0.1:8000";
     try {
       const formData = new FormData();
       const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
       formData.append("file", blob, fileName);
 
-      const pyRes = await fetch(`${PYTHON_BACKEND_URL}/api/upload-master`, {
+      const pyRes = await fetch(`${getPythonApiUrl()}/api/upload-master`, {
         method: "POST",
         body: formData,
       });
@@ -882,13 +882,12 @@ export async function importFile({ fileName, buffer, fileType, uploadedBy, sourc
 
     // Forward report to Python backend so it is stored cumulatively, converted to .docx, mined, and triggers retrain
     try {
-      const PYTHON_BACKEND_URL = process.env.PYTHON_BACKEND_URL || "http://127.0.0.1:8000";
       const pyForm = new FormData();
       pyForm.append("report_type", fileType);
       const blob = new Blob([buffer], { type: "application/octet-stream" });
       pyForm.append("file", blob, fileName);
 
-      const pyRes = await fetch(`${PYTHON_BACKEND_URL}/api/upload-report`, {
+      const pyRes = await fetch(`${getPythonApiUrl()}/api/upload-report`, {
         method: "POST",
         body: pyForm,
       });

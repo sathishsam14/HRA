@@ -5,8 +5,7 @@
 
 import { db } from "./db.js";
 import { findRaceExtraEntry } from "./rating/raceExtras.js";
-
-const PYTHON_BACKEND_URL = process.env.PYTHON_BACKEND_URL || "http://127.0.0.1:8000";
+import { getPythonApiUrl } from "./pythonApi.js";
 
 /**
  * Classifies race category into TERMS or HANDICAP.
@@ -122,8 +121,9 @@ export async function rateMeeting(tx = null) {
   }
 
   let ratings = [];
+  const pythonApiUrl = getPythonApiUrl();
   try {
-    const response = await fetch(`${PYTHON_BACKEND_URL}/api/predict-meeting`, {
+    const response = await fetch(`${pythonApiUrl}/api/predict-meeting`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ entries: meetingEntries }),
@@ -138,7 +138,7 @@ export async function rateMeeting(tx = null) {
       console.warn(`[RATE] Python backend /api/predict-meeting returned status: ${response.status}`);
     }
   } catch (backendErr) {
-    console.error(`[RATE] Could not reach Python backend at ${PYTHON_BACKEND_URL}:`, backendErr.message);
+    console.error(`[RATE] Could not reach Python backend at ${pythonApiUrl}:`, backendErr.message);
   }
 
   if (ratings.length === 0) {

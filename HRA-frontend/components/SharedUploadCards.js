@@ -139,10 +139,9 @@ export default function SharedUploadCards({ onUploadSuccess, isHandicapperOrAdmi
         });
       }
 
-      // Check Python ML Backend master status
-      const PYTHON_BACKEND_URL = process.env.NEXT_PUBLIC_PYTHON_BACKEND_URL || "http://127.0.0.1:8000";
+      // Check Python ML Backend master status via Next.js server API route
       try {
-        const infoRes = await fetch(`${PYTHON_BACKEND_URL}/api/model-info`);
+        const infoRes = await fetch("/api/model-info", { cache: "no-store" });
         if (infoRes.ok) {
           const infoJson = await infoRes.json();
           setMasterInfo(infoJson);

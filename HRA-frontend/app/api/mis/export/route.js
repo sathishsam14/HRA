@@ -8,6 +8,7 @@ import { NextResponse } from "next/server";
 import ExcelJS from "exceljs";
 import db from "@/lib/db";
 import { getSession } from "@/lib/auth";
+import { getPythonApiUrl } from "@/lib/pythonApi";
 
 export async function GET(request) {
   try {
@@ -163,8 +164,7 @@ export async function GET(request) {
 
     // Also include filtered Master BSM records so Export Excel matches MIS table
     try {
-      const PYTHON_BACKEND_URL = process.env.PYTHON_BACKEND_URL || "http://127.0.0.1:8000";
-      const mRes = await fetch(`${PYTHON_BACKEND_URL}/api/master-records`, { cache: "no-store" });
+      const mRes = await fetch(`${getPythonApiUrl()}/api/master-records`, { cache: "no-store" });
       if (mRes.ok) {
         const mData = await mRes.json();
         if (mData.success && Array.isArray(mData.rows)) {
