@@ -50,22 +50,21 @@ export async function GET(request) {
     const pageSize = Math.min(100, Math.max(1, parseInt(searchParams.get("pageSize") || "20", 10)));
     const skip = (page - 1) * pageSize;
 
-    // 1. Build where clause
-    const where = {};
+    // 1. Build where clause (Audit log only tracks OVERRIDE actions made by handicappers)
+    const where = {
+      action: "OVERRIDE",
+    };
 
-    // Date range filter
+    // Date range filter (compare log.at or override date)
     if (startDate || endDate) {
       where.at = {};
       if (startDate) {
-        const s = new Date(startDate);
+        const s = new Date(`${startDate}T00:00:00`);
         if (!isNaN(s.getTime())) where.at.gte = s;
       }
       if (endDate) {
-        const e = new Date(endDate);
-        if (!isNaN(e.getTime())) {
-          e.setHours(23, 59, 59, 999);
-          where.at.lte = e;
-        }
+        const e = new Date(`${endDate}T23:59:59.999`);
+        if (!isNaN(e.getTime())) where.at.lte = e;
       }
     }
 
@@ -73,28 +72,6 @@ export async function GET(request) {
     if (userId && userId !== "ALL") {
       const parsedId = parseInt(userId, 10);
       if (!isNaN(parsedId)) where.userId = parsedId;
-    }
-
-    // Audit log only tracks OVERRIDE actions made by handicappers
-    where.action = "OVERRIDE";
-
-    // Race No filter
-    const targetRaceNo = raceNo || race;
-    if (targetRaceNo && targetRaceNo !== "ALL") {
-      const parsedRNo = parseInt(targetRaceNo, 10);
-      if (!isNaN(parsedRNo)) {
-        where.after = { path: ["raceNo"], equals: parsedRNo };
-      }
-    }
-
-    // Horse name search
-    if (horseName && horseName.trim() !== "") {
-      where.OR = [
-        { after: { path: ["horseName"], string_contains: horseName.trim() } },
-        { before: { path: ["horseName"], string_contains: horseName.trim() } },
-        { entityId: { contains: horseName.trim(), mode: "insensitive" } },
-        { reason: { contains: horseName.trim(), mode: "insensitive" } },
-      ];
     }
 
     // 2. Fetch distinct users, race distances, and matching logs
@@ -126,20 +103,47 @@ export async function GET(request) {
         raceDistanceMap.set(key, r.distance);
       }
     }
+    for (const log of allMatchingLogs) {
+      const d = log.after?.distance || log.before?.distance;
+      if (d != null && !isNaN(Number(d))) {
+        distanceSet.add(Number(d));
+      }
+    }
     const availableDistances = Array.from(distanceSet).sort((a, b) => a - b);
 
+    const targetRaceNo = raceNo || race;
+    const parsedRNo = targetRaceNo && targetRaceNo !== "ALL" ? parseInt(targetRaceNo, 10) : null;
     const parsedDist = distance && distance !== "ALL" ? parseInt(distance, 10) : null;
-    const filteredLogs = parsedDist && !isNaN(parsedDist)
-      ? allMatchingLogs.filter((log) => {
-          const after = log.after || {};
-          const before = log.before || {};
-          const rNo = after.raceNo || before.raceNo;
-          const rDateRaw = after.raceDate || before.raceDate;
-          const rDate = rDateRaw ? String(rDateRaw).slice(0, 10) : null;
-          const dist = after.distance || before.distance || (rDate && rNo ? raceDistanceMap.get(`${rDate}_${rNo}`) : null);
-          return Number(dist) === parsedDist;
-        })
-      : allMatchingLogs;
+    const searchHorse = horseName ? horseName.trim().toLowerCase() : "";
+
+    const filteredLogs = allMatchingLogs.filter((log) => {
+      const after = log.after || {};
+      const before = log.before || {};
+      const rNo = after.raceNo ?? before.raceNo;
+      const rDateRaw = after.raceDate || before.raceDate;
+      const rDate = rDateRaw ? String(rDateRaw).slice(0, 10) : null;
+
+      if (parsedRNo && !isNaN(parsedRNo) && Number(rNo) !== parsedRNo) {
+        return false;
+      }
+
+      if (parsedDist && !isNaN(parsedDist)) {
+        const dist = after.distance || before.distance || (rDate && rNo ? raceDistanceMap.get(`${rDate}_${rNo}`) : null);
+        if (Number(dist) !== parsedDist) return false;
+      }
+
+      if (searchHorse) {
+        const h1 = String(after.horseName || "").toLowerCase();
+        const h2 = String(before.horseName || "").toLowerCase();
+        const eId = String(log.entityId || "").toLowerCase();
+        const rsn = String(log.reason || "").toLowerCase();
+        if (!h1.includes(searchHorse) && !h2.includes(searchHorse) && !eId.includes(searchHorse) && !rsn.includes(searchHorse)) {
+          return false;
+        }
+      }
+
+      return true;
+    });
 
     const totalCount = filteredLogs.length;
     const logs = filteredLogs.slice(skip, skip + pageSize);
@@ -192,6 +196,13 @@ export async function GET(request) {
         (log.entity === "Horse" ? log.entityId : "—");
       const entityRaceNo = after.raceNo || before.raceNo || 5;
       const entityRaceDate = after.raceDate || before.raceDate || formatDateOnly(log.at);
+      const entityDistance =
+        after.distance ||
+        before.distance ||
+        (entityRaceDate && entityRaceNo
+          ? raceDistanceMap.get(`${String(entityRaceDate).slice(0, 10)}_${entityRaceNo}`)
+          : null) ||
+        null;
 
       // 7 Assessment steps trace
       const trace = after.trace || {
@@ -218,6 +229,7 @@ export async function GET(request) {
         role: log.user?.role || "Handicapper",
         raceDate: entityRaceDate,
         raceNo: entityRaceNo,
+        distance: entityDistance,
         horseName: entityHorseName,
         recommendedRating: beforeRating,
         finalRating: finalRatingVal,

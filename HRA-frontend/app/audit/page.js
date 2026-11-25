@@ -287,7 +287,7 @@ function AuditContent() {
       {/* 3. Filters Card (Prototype Layout) */}
       <div className="bg-white rounded-xl border border-[#E2E8F0] shadow-[0_1px_2px_rgba(15,23,42,0.06)] p-6">
         <form onSubmit={handleSearch} className="space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-4 items-end">
             {/* Start Date */}
             <div>
               <label className="block text-xs font-medium text-slate-700 mb-1.5">
@@ -364,6 +364,25 @@ function AuditContent() {
                 onChange={(e) => setFilterHorseName(e.target.value)}
                 className="w-full h-10 px-3 rounded-lg border border-[#CBD5E1] bg-white text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-[#2563EB]"
               />
+            </div>
+
+            {/* Search & Reset */}
+            <div className="flex items-center gap-2">
+              <button
+                type="submit"
+                className="flex-1 h-10 px-4 bg-[#2563EB] hover:bg-[#1D4ED8] text-white text-xs font-semibold rounded-lg shadow-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+              >
+                <Search className="w-3.5 h-3.5" />
+                <span>Search</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleReset}
+                title="Reset filters"
+                className="h-10 px-3 bg-white border border-[#CBD5E1] hover:bg-slate-50 text-slate-500 hover:text-slate-800 rounded-lg text-xs font-medium transition-colors cursor-pointer"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+              </button>
             </div>
           </div>
 
