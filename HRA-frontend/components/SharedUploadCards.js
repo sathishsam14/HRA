@@ -202,12 +202,6 @@ export default function SharedUploadCards({ onUploadSuccess, isHandicapperOrAdmi
         },
       }));
 
-      const fieldConfig = UPLOAD_FIELDS.find((f) => f.type === type);
-      setGlobalMessage({
-        type: "success",
-        text: `${fieldConfig?.title || type} ("${file.name}") uploaded successfully!`,
-      });
-
       await refreshStatuses();
       if (typeof onUploadSuccess === "function") {
         onUploadSuccess(type, data);
@@ -243,29 +237,7 @@ export default function SharedUploadCards({ onUploadSuccess, isHandicapperOrAdmi
             Loaded from local application file (<code className="bg-white px-1.5 py-0.5 rounded border border-slate-200 font-mono text-[11px] text-blue-700">HRA-backend/data/BSM.xlsx</code> · {masterCount.toLocaleString()} historical runs from {masterMinDate} to {masterMaxDate})
           </span>
         </div>
-        <div className="flex items-center gap-1.5 text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 text-[11px] font-bold">
-          <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-          <span>Active in Python Engine</span>
-        </div>
       </div>
-
-      {/* Global alert feedback */}
-      {globalMessage && (
-        <div
-          className={`p-3 rounded-lg border flex items-center gap-2 text-xs font-semibold ${
-            globalMessage.type === "success"
-              ? "bg-emerald-50 text-emerald-800 border-emerald-200"
-              : "bg-red-50 text-red-800 border-red-200"
-          }`}
-        >
-          {globalMessage.type === "success" ? (
-            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-          ) : (
-            <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
-          )}
-          <span>{globalMessage.text}</span>
-        </div>
-      )}
 
       {/* Upload Cards: ALL IN THE SAME ROW (Grid of 5 columns) */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3.5 items-stretch">

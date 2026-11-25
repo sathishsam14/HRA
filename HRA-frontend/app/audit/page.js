@@ -242,7 +242,7 @@ function AuditContent() {
       const csvLines = exportRows.map((e) => [
         `"${e.atIst || formatDateTime(e.timestamp)}"`,
         `"${e.user || e.userName || ""}"`,
-        `"${e.raceDate || ""}"`,
+        `"${formatDateOnly(e.raceDate)}"`,
         `"Race ${e.raceNo ?? ""}"`,
         `"${e.horseName || ""}"`,
         e.recommendedRating ?? "",
