@@ -14,6 +14,9 @@ import hashlib
 import shutil
 import struct
 import tempfile
+import urllib.request
+import urllib.parse
+import http.cookiejar
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 import numpy as np
@@ -366,10 +369,66 @@ def sync_master_from_ftp_if_configured():
         print(f"⚠️ [BACKEND] FTP sync failed ({e}). Falling back to local master file at {DEFAULT_BSM_PATH}")
 
 
+def sync_master_from_url_if_needed():
+    """
+    If no master file exists at DEFAULT_BSM_PATH and MASTER_URL is set,
+    downloads the file (following redirects and handling Google Drive direct-download
+    links), validates it with validate_bsm_file(), and saves it as DEFAULT_BSM_PATH.
+    Never logs MASTER_URL.
+    """
+    master_url = (os.getenv("MASTER_URL") or "").strip()
+    if not master_url or os.path.exists(DEFAULT_BSM_PATH):
+        return
+
+    os.makedirs(MASTER_DIR, exist_ok=True)
+    temp_path = os.path.join(MASTER_DIR, f"temp_url_{datetime.now().timestamp()}.xlsx")
+    try:
+        print("🌐 [BACKEND] No local master file found. Downloading master dataset from MASTER_URL...")
+        cj = http.cookiejar.CookieJar()
+        opener = urllib.request.build_opener(
+            urllib.request.HTTPCookieProcessor(cj),
+            urllib.request.HTTPRedirectHandler(),
+        )
+        opener.addheaders = [("User-Agent", "Mozilla/5.0")]
+
+        with opener.open(master_url, timeout=60) as resp:
+            data = resp.read()
+
+        # Handle Google Drive virus-scan confirmation HTML page if returned
+        head = data[:512].lstrip().lower()
+        if head.startswith(b"<!doctype html") or head.startswith(b"<html"):
+            html = data.decode("utf-8", errors="ignore")
+            action_m = re.search(r'<form[^>]+action="([^"]+)"', html, re.I)
+            if action_m:
+                action_url = action_m.group(1).replace("&amp;", "&")
+                inputs = dict(re.findall(r'<input[^>]+type="hidden"[^>]+name="([^"]+)"[^>]+value="([^"]*)"', html, re.I))
+                if inputs:
+                    qs = urllib.parse.urlencode(inputs)
+                    sep = "&" if "?" in action_url else "?"
+                    confirm_url = f"{action_url}{sep}{qs}"
+                    with opener.open(confirm_url, timeout=60) as resp2:
+                        data = resp2.read()
+
+        if not data:
+            raise ValueError("Downloaded master file is empty (0 bytes).")
+
+        with open(temp_path, "wb") as f:
+            f.write(data)
+
+        validate_bsm_file(temp_path)
+        shutil.move(temp_path, DEFAULT_BSM_PATH)
+        print(f"✅ [BACKEND] Validated and saved master dataset from MASTER_URL to {DEFAULT_BSM_PATH}")
+    except Exception as e:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        print(f"⚠️ [BACKEND] Failed to download/validate master dataset from MASTER_URL: {e}")
+
+
 def get_base_data_and_model(force_reload: bool = False):
     global _cached_bsm, _cached_model, _cached_ev, _cached_raw_bsm_rows, _training_info
     if _cached_bsm is None or force_reload:
         sync_master_from_ftp_if_configured()
+        sync_master_from_url_if_needed()
     if (_cached_bsm is None or force_reload) and os.path.exists(DEFAULT_BSM_PATH):
         print(f"📂 [BACKEND] Loading baseline historical BSM dataset from {DEFAULT_BSM_PATH}...")
         validate_bsm_file(DEFAULT_BSM_PATH)
