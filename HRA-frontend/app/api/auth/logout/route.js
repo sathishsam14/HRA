@@ -7,20 +7,7 @@ import { getSession, SESSION_COOKIE_NAME } from "@/lib/auth";
 
 export async function POST(request) {
   try {
-    const session = await getSession(request);
-
-    // Write logout to AuditLog if user had an active session
-    if (session?.id) {
-      await db.auditLog.create({
-        data: {
-          action: "LOGOUT",
-          userId: session.id,
-          entity: "User",
-          entityId: String(session.id),
-          reason: "User logged out",
-        },
-      });
-    }
+    await getSession(request);
 
     const response = NextResponse.json({ ok: true, message: "Logged out successfully" });
 

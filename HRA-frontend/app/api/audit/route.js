@@ -75,14 +75,8 @@ export async function GET(request) {
       if (!isNaN(parsedId)) where.userId = parsedId;
     }
 
-    // Action filter:
-    if (action && action === "ALL") {
-      where.action = { in: ["OVERRIDE", "DECISION_KEPT"] };
-    } else if (action && action !== "ALL") {
-      where.action = action;
-    } else {
-      where.action = "OVERRIDE";
-    }
+    // Audit log only tracks OVERRIDE actions made by handicappers
+    where.action = "OVERRIDE";
 
     // Race No filter
     const targetRaceNo = raceNo || race;

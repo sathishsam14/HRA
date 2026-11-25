@@ -10,7 +10,7 @@ import { invalidateServerCache } from "@/lib/serverCache.js";
 export async function GET(request) {
   try {
     const session = await getSession(request);
-    await requireRole(["ADMIN", "HANDICAPPER"], session);
+    await requireRole(["ADMIN", "HANDICAPPER", "MANAGER"], session);
 
     const files = await db.uploadedFile.findMany({
       take: 20,
@@ -44,7 +44,7 @@ export async function POST(request) {
   try {
     // 1. Enforce RBAC: Admin and Handicapper only; Manager refused with 403
     const session = await getSession(request);
-    await requireRole(["ADMIN", "HANDICAPPER"], session);
+    await requireRole(["ADMIN", "HANDICAPPER", "MANAGER"], session);
 
     // 2. Parse multipart form data
     const formData = await request.formData();

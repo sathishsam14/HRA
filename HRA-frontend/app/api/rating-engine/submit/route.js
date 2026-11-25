@@ -206,36 +206,6 @@ export async function POST(request) {
               },
             });
           }
-        } else {
-          // Log accepted recommendation
-          await tx.auditLog.create({
-            data: {
-              action: "DECISION_KEPT",
-              entity: "Horse",
-              entityId: entry.horse.horseId,
-              userId: session.id,
-              reason: "Handicapper approved system recommendation",
-              before: {
-                horseName: entry.horse.name,
-                raceNo: race.raceNo,
-                raceDate: race.raceDate,
-                currentRating: entry.horse.currentRating,
-                recommendedRating: entry.rating?.recommendedRating,
-                recommendedChange: entry.rating?.recommendedChange,
-                status: entry.rating?.status,
-                patternDetails,
-              },
-              after: {
-                horseName: entry.horse.name,
-                raceNo: race.raceNo,
-                raceDate: race.raceDate,
-                finalRating,
-                finalChange,
-                overridden: false,
-                patternDetails,
-              },
-            },
-          });
         }
       }
 

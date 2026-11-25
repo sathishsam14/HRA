@@ -913,26 +913,6 @@ export async function importFile({ fileName, buffer, fileType, uploadedBy, sourc
       },
     });
 
-    await db.auditLog.create({
-      data: {
-        userId: typeof uploadedBy === "number" ? uploadedBy : null,
-        action: "FILE_IMPORT",
-        entity: "UploadedFile",
-        entityId: String(createdUploadedFile.id),
-        after: {
-          fileId: createdUploadedFile.id,
-          fileName,
-          fileType,
-          format: reportRes.format || "Word",
-          linkedCount: reportRes.linkedCount,
-          horseCount: reportRes.horseCount,
-          unmatchedCount: reportRes.unmatchedNames.length,
-          source,
-        },
-        reason: `Imported ${fileType} ${reportRes.format || "Word"} report "${fileName}": ${reportRes.summary}`,
-      },
-    });
-
     const unmatchedRows = (reportRes.unmatched || []).map((u, idx) => ({
       row: idx + 1,
       raceDate: u.date,
@@ -1552,25 +1532,6 @@ export async function importFile({ fileName, buffer, fileType, uploadedBy, sourc
           racesToAutoRate.push(raceId);
         }
       }
-
-      // Write AuditLog row
-      await tx.auditLog.create({
-        data: {
-          userId: typeof uploadedBy === "number" ? uploadedBy : null,
-          action: "FILE_IMPORT",
-          entity: "UploadedFile",
-          entityId: String(createdUploadedFile.id),
-          after: {
-            fileId: createdUploadedFile.id,
-            fileName,
-            fileType,
-            savedRows: savedRowsCount,
-            unmatchedCount: unmatched.length,
-            source,
-          },
-          reason: `Imported ${fileType} file "${fileName}" (${savedRowsCount} row(s) saved, source: ${source}).`,
-        },
-      });
     },
     { maxWait: 600000, timeout: 600000 }
   );

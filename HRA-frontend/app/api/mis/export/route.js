@@ -157,8 +157,61 @@ export async function GET(request) {
         status: decision ? (decision.overridden ? "OVERRIDDEN" : "RATED") : (rating ? rating.status : "REVIEWED"),
         override: decision ? (decision.overridden ? "Yes" : "No") : "No",
         finalChange: finalChange !== null ? (finalChange > 0 ? `+${finalChange}` : String(finalChange)) : "—",
-        reasonExplanation: decision?.overrideReason || (Array.isArray(rating?.reasons) ? rating.reasons.join("; ") : (rating?.reasons || "Historical BSM Race record")),
+        reasonExplanation: reasonExplanation || "Approved recommendation",
       });
+    }
+
+    // Also include filtered Master BSM records so Export Excel matches MIS table
+    try {
+      const PYTHON_BACKEND_URL = process.env.PYTHON_BACKEND_URL || "http://127.0.0.1:8000";
+      const mRes = await fetch(`${PYTHON_BACKEND_URL}/api/master-records`, { cache: "no-store" });
+      if (mRes.ok) {
+        const mData = await mRes.json();
+        if (mData.success && Array.isArray(mData.rows)) {
+          const searchHorse = horseName ? horseName.trim().toLowerCase() : "";
+          for (const mr of mData.rows) {
+            if (venue && venue !== "ALL" && mr.venue !== venue) continue;
+            if (raceDate && raceDate !== "ALL" && mr.raceDate !== raceDate) continue;
+            if (season && season !== "ALL" && mr.raceSeason !== season) continue;
+            if (raceType && raceType !== "ALL" && String(mr.raceType).toUpperCase() !== raceType.toUpperCase()) continue;
+            if (category && category !== "ALL" && mr.raceCategory !== category) continue;
+            if (searchHorse && !String(mr.horseName).toLowerCase().includes(searchHorse)) continue;
+            sheet.addRow({
+              venue: mr.venue,
+              raceDate: mr.raceDate,
+              raceSeason: mr.raceSeason,
+              raceType: mr.raceType,
+              raceCategory: mr.raceCategory,
+              raceNo: mr.raceNo,
+              cardNo: mr.cardNo,
+              distance: mr.distance,
+              currentRating: mr.currentRating,
+              horseName: mr.horseName,
+              horseWeight: mr.horseWeight,
+              shoes: mr.shoes,
+              startGate: mr.startGate,
+              weightDeclare: mr.weightDeclare,
+              jockey: mr.jockey,
+              weightCarried: mr.weightCarried,
+              placing: mr.placing,
+              timing: mr.timing,
+              verdict: mr.verdict,
+              trainer: mr.trainer,
+              penetrometer: mr.penetrometer,
+              railing: mr.railing,
+              starterReport: mr.starterReport,
+              veterinaryReport: mr.veterinaryReport,
+              incidentReport: mr.incidentReport,
+              status: mr.status,
+              override: mr.override,
+              finalChange: mr.finalChange,
+              reasonExplanation: mr.reasonExplanation,
+            });
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("Could not fetch master BSM records for MIS export:", err.message);
     }
 
     const buffer = await workbook.xlsx.writeBuffer();

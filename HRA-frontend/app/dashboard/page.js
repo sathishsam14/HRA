@@ -95,7 +95,7 @@ function DashboardContent() {
         </div>
       </div>
 
-      {/* Admin View: Statistical Pattern Accuracy Card */}
+      {/* Admin View: Statistical Pattern Accuracy Card (Commented out as requested)
       {data?.patternAccuracy && (
         <div className="bg-white rounded-xl border border-[#E2E8F0] shadow-[0_1px_2px_rgba(15,23,42,0.06)] p-6">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 pb-4 border-b border-[#EEF2F6]">
@@ -117,7 +117,6 @@ function DashboardContent() {
             </div>
           </div>
 
-          {/* Warning Banner if within ±1 falls below 55% */}
           {data.patternAccuracy.isWarning && (
             <div className="mt-4 p-3.5 rounded-lg bg-amber-50 border border-amber-300 text-xs font-semibold text-amber-900 flex items-center gap-2">
               <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
@@ -127,9 +126,7 @@ function DashboardContent() {
             </div>
           )}
 
-          {/* 3 Metric Badges */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-4">
-            {/* Exact Match */}
             <div className="p-4 rounded-lg bg-slate-50 border border-slate-200">
               <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider block">
                 Exact Match
@@ -142,7 +139,6 @@ function DashboardContent() {
               </span>
             </div>
 
-            {/* Within ±1 Point */}
             <div
               className={`p-4 rounded-lg border ${
                 data.patternAccuracy.isWarning
@@ -174,7 +170,6 @@ function DashboardContent() {
               </span>
             </div>
 
-            {/* Average Error */}
             <div className="p-4 rounded-lg bg-slate-50 border border-slate-200">
               <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider block">
                 Average Error
@@ -189,6 +184,7 @@ function DashboardContent() {
           </div>
         </div>
       )}
+      */}
 
       {/* Main Grid: Left (Races waiting for review) & Right (Recent Overrides & Last 5 Files) */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">

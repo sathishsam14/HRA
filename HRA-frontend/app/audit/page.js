@@ -297,8 +297,6 @@ function AuditContent() {
                 className="w-full h-10 px-3 rounded-lg border border-[#CBD5E1] bg-white text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#2563EB]"
               >
                 <option value="OVERRIDE">Rating Overrides Only</option>
-                <option value="DECISION_KEPT">Accepted Recommendations</option>
-                <option value="ALL">All Decisions (Overrides & Accepted)</option>
               </select>
             </div>
 

@@ -81,7 +81,9 @@ function RatingEngineContent() {
   const initialRaceParam = searchParams.get("race");
 
   const { user } = useAuth();
+  const isHandicapper = user?.role === "HANDICAPPER";
   const isHandicapperOrAdmin = user?.role === "HANDICAPPER" || user?.role === "ADMIN";
+  const canUpload = user?.role === "HANDICAPPER" || user?.role === "ADMIN" || user?.role === "MANAGER";
   const isManager = user?.role === "MANAGER";
 
   // Filter state
@@ -242,7 +244,7 @@ function RatingEngineContent() {
 
   // Handle direct file upload from race day cards and trigger auto-rating
   const handleCardFileUpload = async (fileType, file) => {
-    if (!file || !isHandicapperOrAdmin) return;
+    if (!file || !canUpload) return;
 
     try {
       setUploadingFileType(fileType);
@@ -289,7 +291,7 @@ function RatingEngineContent() {
 
   // Handle report upload (.docx, .doc, .pdf, .txt, .xlsx, .xls, .csv) for Starter, Veterinary, Incidence, Stipe
   const handleReportUpload = async (reportType, file) => {
-    if (!file || !isHandicapperOrAdmin) return;
+    if (!file || !canUpload) return;
 
     // Reset previous error and result for this card
     setReportCardsState((prev) => ({
@@ -922,28 +924,6 @@ function RatingEngineContent() {
           <p className="text-sm text-slate-500 mt-1">
             Automated race calculations, handicapper reviews, and coefficient controls
           </p>
-          <div className="mt-2.5 flex flex-wrap items-center gap-2">
-            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-violet-50 text-violet-700 border border-violet-200">
-              <Sparkles className="w-3.5 h-3.5 text-violet-600" />
-              <span>Rating Mode: {ratingModeLabel}</span>
-            </span>
-            {patternInfo?.summaryText && (
-              <div
-                className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold ${
-                  patternInfo.loaded === false
-                    ? "bg-amber-50 border border-amber-300 text-amber-800"
-                    : "bg-[#EFF6FF] border border-[#BFDBFE] text-[#1E40AF]"
-                }`}
-              >
-                <span
-                  className={`w-2 h-2 rounded-full shrink-0 ${
-                    patternInfo.loaded === false ? "bg-amber-500" : "bg-emerald-500 animate-pulse"
-                  }`}
-                />
-                <span>{patternInfo.summaryText}</span>
-              </div>
-            )}
-          </div>
         </div>
 
         <div className="flex items-center gap-3">
@@ -995,20 +975,12 @@ function RatingEngineContent() {
             <h2 className="text-base font-semibold text-slate-900">
               Files for this race day
             </h2>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Upload Master History (BSM) to train the model, Current Race (BWM) for declarations, and optional reports.
-            </p>
           </div>
-          {patternInfo?.summaryText && (
-            <div className="text-xs font-semibold text-[#12306B] bg-blue-50 px-3 py-1.5 rounded-lg border border-blue-200">
-              📊 {patternInfo.summaryText}
-            </div>
-          )}
         </div>
 
         <div className="mt-5">
           <SharedUploadCards
-            isHandicapperOrAdmin={isHandicapperOrAdmin}
+            isHandicapperOrAdmin={canUpload}
             onUploadSuccess={() => {
               loadRaces();
             }}
@@ -1239,14 +1211,25 @@ function RatingEngineContent() {
                 </span>
               </span>
             )}
-            <a
-              href={`/api/rating-engine/export?raceId=${currentRace?.id || "ALL"}`}
-              download
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-[#CBD5E1] text-[#12306B] hover:bg-slate-50 text-xs font-semibold rounded-lg shadow-2xs transition cursor-pointer select-none"
-            >
-              <Download className="w-3.5 h-3.5 text-[#12306B]" />
-              <span>Download Excel</span>
-            </a>
+            {currentHorses.length === 0 ? (
+              <button
+                type="button"
+                disabled
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 border border-[#E2E8F0] text-slate-400 text-xs font-semibold rounded-lg opacity-50 cursor-not-allowed select-none"
+              >
+                <Download className="w-3.5 h-3.5 text-slate-400" />
+                <span>Download Excel</span>
+              </button>
+            ) : (
+              <a
+                href={`/api/rating-engine/export?raceId=${currentRace?.id || "ALL"}`}
+                download
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-[#CBD5E1] text-[#12306B] hover:bg-slate-50 text-xs font-semibold rounded-lg shadow-2xs transition cursor-pointer select-none"
+              >
+                <Download className="w-3.5 h-3.5 text-[#12306B]" />
+                <span>Download Excel</span>
+              </a>
+            )}
             {currentHorses.length > 0 && (
               <span className="text-xs font-semibold text-slate-500">
                 {currentHorses.length} runners
@@ -1457,9 +1440,9 @@ function RatingEngineContent() {
                           <span className="text-slate-400">None</span>
                         )}
                       </td>
-                      {/* Action (Only Override; No keep option; No edit after override) */}
+                      {/* Action (Only Override for Handicapper; No keep option; No edit after override) */}
                       <td className="px-4 py-3 text-right whitespace-nowrap">
-                        {isHandicapperOrAdmin && !isRaceReviewed ? (
+                        {isHandicapper && !isRaceReviewed ? (
                           <div className="flex items-center justify-end">
                             {isOverridden ? (
                               <span
