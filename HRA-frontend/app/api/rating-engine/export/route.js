@@ -8,6 +8,7 @@ import ExcelJS from "exceljs";
 import db from "@/lib/db";
 import { getSession } from "@/lib/auth";
 import { findRaceExtraEntry } from "@/lib/rating/raceExtras";
+import { getPythonApiUrl } from "@/lib/pythonApi";
 
 export async function GET(request) {
   try {
@@ -222,8 +223,7 @@ export async function GET(request) {
     evidenceSheet.getRow(1).font = { bold: true };
 
     try {
-      const PYTHON_BACKEND_URL = process.env.PYTHON_BACKEND_URL || "http://127.0.0.1:8000";
-      const evRes = await fetch(`${PYTHON_BACKEND_URL}/api/report-evidence`, {
+      const evRes = await fetch(`${getPythonApiUrl()}/api/report-evidence`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ horses: Array.from(buffer_horses) }),

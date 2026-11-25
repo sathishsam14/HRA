@@ -6,8 +6,7 @@ import { NextResponse } from "next/server";
 import db from "@/lib/db";
 import { getSession } from "@/lib/auth";
 import { getCachedData } from "@/lib/serverCache.js";
-
-const PYTHON_BACKEND_URL = process.env.PYTHON_BACKEND_URL || "http://127.0.0.1:8000";
+import { getPythonApiUrl } from "@/lib/pythonApi";
 
 export async function GET(request) {
   try {
@@ -124,7 +123,7 @@ export async function GET(request) {
 
       let patternAccuracy = null;
       try {
-        const accRes = await fetch(`${PYTHON_BACKEND_URL}/api/accuracy`);
+        const accRes = await fetch(`${getPythonApiUrl()}/api/accuracy`);
         if (accRes.ok) {
           const acc = await accRes.json();
           const testedEntries = acc.test_count || 1082;

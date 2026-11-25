@@ -10,6 +10,7 @@ import db from "@/lib/db";
 import { getSession, requireRole } from "@/lib/auth";
 import { applyOverride } from "@/lib/rate.js";
 import { invalidateServerCache } from "@/lib/serverCache.js";
+import { getPythonApiUrl } from "@/lib/pythonApi";
 
 export async function POST(request) {
   try {
@@ -220,8 +221,7 @@ export async function POST(request) {
 
     // Notify Python backend of confirmed race so it learns from confirmed decisions
     try {
-      const PYTHON_BACKEND_URL = process.env.PYTHON_BACKEND_URL || "http://127.0.0.1:8000";
-      fetch(`${PYTHON_BACKEND_URL}/api/sync-confirmed-race`, {
+      fetch(`${getPythonApiUrl()}/api/sync-confirmed-race`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

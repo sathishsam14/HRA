@@ -9,6 +9,7 @@ import db from "@/lib/db";
 import { getSession } from "@/lib/auth";
 import { findRaceExtraEntry } from "@/lib/rating/raceExtras";
 import { getCachedData } from "@/lib/serverCache.js";
+import { getPythonApiUrl } from "@/lib/pythonApi";
 
 export async function GET(request) {
   try {
@@ -276,8 +277,7 @@ export async function GET(request) {
       let reportEventsLoaded = 0;
       let useConfirmedRaces = true;
       try {
-        const PYTHON_BACKEND_URL = process.env.PYTHON_BACKEND_URL || "http://127.0.0.1:8000";
-        const infoRes = await fetch(`${PYTHON_BACKEND_URL}/api/model-info`, { cache: "no-store" });
+        const infoRes = await fetch(`${getPythonApiUrl()}/api/model-info`, { cache: "no-store" });
         if (infoRes.ok) {
           const info = await infoRes.json();
           masterDataReady = Boolean(info.master_data_loaded);

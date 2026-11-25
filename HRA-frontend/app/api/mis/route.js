@@ -9,8 +9,7 @@ import { NextResponse } from "next/server";
 import db from "@/lib/db";
 import { getSession } from "@/lib/auth";
 import { getCachedData } from "@/lib/serverCache.js";
-
-const PYTHON_BACKEND_URL = process.env.PYTHON_BACKEND_URL || "http://127.0.0.1:8000";
+import { getPythonApiUrl } from "@/lib/pythonApi";
 
 export async function GET(request) {
   try {
@@ -106,7 +105,7 @@ export async function GET(request) {
       // 2. Fetch all master Excel (BSM.xlsx) records from Python backend
       let masterRows = [];
       try {
-        const mRes = await fetch(`${PYTHON_BACKEND_URL}/api/master-records`, { cache: "no-store" });
+        const mRes = await fetch(`${getPythonApiUrl()}/api/master-records`, { cache: "no-store" });
         if (mRes.ok) {
           const mData = await mRes.json();
           if (mData.success && Array.isArray(mData.rows)) {
