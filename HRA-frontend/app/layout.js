@@ -9,8 +9,13 @@ const inter = Inter({
 });
 
 export const metadata = {
-  title: "HRA – Horse Rating Automation",
+  title: "BTC Horse Rating Automation",
   description: "BTC Racing Department Horse Rating Automation System",
+  icons: {
+    icon: "/logo.png",
+    shortcut: "/logo.png",
+    apple: "/logo.png",
+  },
 };
 
 export default function RootLayout({ children }) {
