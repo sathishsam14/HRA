@@ -90,7 +90,7 @@ function MisContent() {
         setFilterCategory("");
       }
     }
-  };
+      };
 
   // Pagination state (server-side)
   const [currentPage, setCurrentPage] = useState(1);
@@ -476,15 +476,6 @@ function MisContent() {
               <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
             )}
             <span>Export Excel</span>
-          </button>
-          <button
-            type="button"
-            onClick={handleExportPDF}
-            disabled={rows.length === 0}
-            className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg border border-[#CBD5E1] bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 shadow-xs transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <FileText className="w-4 h-4 text-rose-600" />
-            <span>Export PDF</span>
           </button>
         </div>
       </div>

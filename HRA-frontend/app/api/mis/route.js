@@ -132,7 +132,7 @@ export async function GET(request) {
             .filter((r) => !raceType || raceType === "ALL" || String(r.raceType).toUpperCase() === raceType.toUpperCase())
             .map((r) => r.raceCategory)
         )
-      ).filter((c) => c && c !== "—");
+      ).filter((c) => c && c !== "—").sort();
       const categoriesByType = {
         Handicap: Array.from(
           new Set(
@@ -140,14 +140,14 @@ export async function GET(request) {
               .filter((r) => String(r.raceType).toUpperCase() === "HANDICAP")
               .map((r) => r.raceCategory)
           )
-        ).filter((c) => c && c !== "—"),
+        ).filter((c) => c && c !== "—").sort(),
         Terms: Array.from(
           new Set(
             combinedRows
               .filter((r) => String(r.raceType).toUpperCase() === "TERMS")
               .map((r) => r.raceCategory)
           )
-        ).filter((c) => c && c !== "—"),
+        ).filter((c) => c && c !== "—").sort(),
       };
 
       // 4. Filter combined rows

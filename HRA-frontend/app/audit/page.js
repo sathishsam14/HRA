@@ -19,6 +19,7 @@ import {
   User,
   SlidersHorizontal,
   Loader2,
+  FileSpreadsheet,
 } from "lucide-react";
 
 function formatDateTime(isoStr) {
@@ -61,15 +62,16 @@ function AuditContent() {
   // Filter input states
   const [filterStartDate, setFilterStartDate] = useState("");
   const [filterEndDate, setFilterEndDate] = useState("");
-  const [filterAction, setFilterAction] = useState("OVERRIDE");
+  const [filterDistance, setFilterDistance] = useState("ALL");
   const [filterRaceNo, setFilterRaceNo] = useState("ALL");
   const [filterHorseName, setFilterHorseName] = useState("");
+  const [availableDistances, setAvailableDistances] = useState([]);
 
   // Applied filter state
   const [appliedFilters, setAppliedFilters] = useState({
     startDate: "",
     endDate: "",
-    action: "OVERRIDE",
+    distance: "ALL",
     raceNo: "ALL",
     horseName: "",
   });
@@ -99,8 +101,8 @@ function AuditContent() {
 
       if (appliedFilters.startDate) params.set("startDate", appliedFilters.startDate);
       if (appliedFilters.endDate) params.set("endDate", appliedFilters.endDate);
-      if (appliedFilters.action && appliedFilters.action !== "ALL") {
-        params.set("action", appliedFilters.action);
+      if (appliedFilters.distance && appliedFilters.distance !== "ALL") {
+        params.set("distance", appliedFilters.distance);
       }
       if (appliedFilters.raceNo && appliedFilters.raceNo !== "ALL") {
         params.set("race", appliedFilters.raceNo);
@@ -116,6 +118,9 @@ function AuditContent() {
       setEntries(data.rows || []);
       setTotalCount(data.pagination?.totalCount || 0);
       setTotalPages(data.pagination?.totalPages || 1);
+      if (Array.isArray(data.filters?.availableDistances)) {
+        setAvailableDistances(data.filters.availableDistances);
+      }
 
       if (data.rows && data.rows.length > 0 && !selectedEntryId) {
         setSelectedEntryId(data.rows[0].id);
@@ -137,7 +142,7 @@ function AuditContent() {
     setAppliedFilters({
       startDate: filterStartDate,
       endDate: filterEndDate,
-      action: filterAction,
+      distance: filterDistance,
       raceNo: filterRaceNo,
       horseName: filterHorseName.trim().toLowerCase(),
     });
@@ -147,13 +152,13 @@ function AuditContent() {
   const handleReset = () => {
     setFilterStartDate("");
     setFilterEndDate("");
-    setFilterAction("OVERRIDE");
+    setFilterDistance("ALL");
     setFilterRaceNo("ALL");
     setFilterHorseName("");
     setAppliedFilters({
       startDate: "",
       endDate: "",
-      action: "OVERRIDE",
+      distance: "ALL",
       raceNo: "ALL",
       horseName: "",
     });
@@ -168,6 +173,35 @@ function AuditContent() {
     }
     return entries[0] || null;
   }, [entries, selectedEntryId]);
+
+  // Excel Export handler
+  const handleExportExcel = async () => {
+    try {
+      setExporting(true);
+      const params = new URLSearchParams();
+      if (filterStartDate) params.set("startDate", filterStartDate);
+      if (filterEndDate) params.set("endDate", filterEndDate);
+      if (filterHorseName.trim()) params.set("race", filterHorseName.trim());
+
+      const response = await fetch(`/api/audit/export?${params.toString()}`);
+      if (!response.ok) throw new Error("Failed to export Excel audit log");
+
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.setAttribute("download", `HRA_Audit_Trail_${new Date().toISOString().slice(0, 10)}.xlsx`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("Excel export failed:", err);
+      alert("Failed to export Excel audit log. Please try again.");
+    } finally {
+      setExporting(false);
+    }
+  };
 
   // CSV Export handler
   const handleExportCSV = async () => {
@@ -239,13 +273,7 @@ function AuditContent() {
       {/* 1. Page Title */}
       <PageTitle
         title="Audit Trail"
-        subtitle="Complete, tamper-evident log of all handicapper rating overrides and justification records"
-        actions={
-          <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-emerald-50 border border-emerald-200 text-xs font-semibold text-emerald-800 shadow-xs">
-            <ShieldCheck className="w-4 h-4 text-emerald-600" />
-            <span>Immutable Audit Log</span>
-          </div>
-        }
+        subtitle="Complete log of handicapper rating overrides and justification records"
       />
 
       {/* 2. Notice bar */}
@@ -286,17 +314,22 @@ function AuditContent() {
               />
             </div>
 
-            {/* Action / Change Type */}
+            {/* Distance */}
             <div>
               <label className="block text-xs font-medium text-slate-700 mb-1.5">
-                Handicapper Action
+                Distance
               </label>
               <select
-                value={filterAction}
-                onChange={(e) => setFilterAction(e.target.value)}
+                value={filterDistance}
+                onChange={(e) => setFilterDistance(e.target.value)}
                 className="w-full h-10 px-3 rounded-lg border border-[#CBD5E1] bg-white text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#2563EB]"
               >
-                <option value="OVERRIDE">Rating Overrides Only</option>
+                <option value="ALL">All Distances</option>
+                {(availableDistances.length > 0 ? availableDistances : [1000, 1100, 1200, 1400, 1600, 1800, 2000, 2400]).map((d) => (
+                  <option key={d} value={String(d)}>
+                    {d} m
+                  </option>
+                ))}
               </select>
             </div>
 
@@ -343,9 +376,24 @@ function AuditContent() {
           <h2 className="text-base font-semibold text-slate-900">
             Handicapper Overrides
           </h2>
-          <span className="text-xs text-slate-500">
-            {totalCount} {totalCount === 1 ? "record" : "records"} found
-          </span>
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-slate-500">
+              {totalCount} {totalCount === 1 ? "record" : "records"} found
+            </span>
+            <button
+              type="button"
+              onClick={handleExportExcel}
+              disabled={exporting || entries.length === 0}
+              className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-lg border border-[#CBD5E1] bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 shadow-xs transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {exporting ? (
+                <Loader2 className="w-4 h-4 animate-spin text-emerald-600" />
+              ) : (
+                <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+              )}
+              <span>Export Excel</span>
+            </button>
+          </div>
         </div>
 
         <div className="overflow-x-auto">
@@ -515,9 +563,6 @@ function AuditContent() {
               <h2 className="text-base font-semibold text-slate-900">
                 Official Decision Audit · {selectedEntry.horseName} · Race {selectedEntry.raceNo ?? 5}
               </h2>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Full comparison between algorithmic recommendation steps and recorded handicapper override
-              </p>
             </div>
             <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-blue-50 text-[#12306B] border border-blue-200">
               <Lock className="w-3 h-3 text-[#2563EB]" /> Read Only Record
@@ -645,9 +690,6 @@ function AuditContent() {
                       );
                     })()}
                   </div>
-                  <span className="text-[11px] text-slate-500 mt-1 block">
-                    Delta from recommended
-                  </span>
                 </div>
 
                 {/* Tile 4: Final rating */}
@@ -657,9 +699,6 @@ function AuditContent() {
                   </span>
                   <span className="text-2xl font-bold text-[#12306B] mt-0.5 block tabular-nums">
                     {selectedEntry.finalRating ?? "—"} pts
-                  </span>
-                  <span className="text-[11px] text-slate-500 mt-0.5 block">
-                    Official post-race rating
                   </span>
                 </div>
 
@@ -671,9 +710,6 @@ function AuditContent() {
                   <p className="text-xs font-semibold text-slate-800 mt-1.5 leading-relaxed">
                     {selectedEntry.reason || "—"}
                   </p>
-                  <span className="text-[11px] text-slate-400 mt-1 block">
-                    Recorded handicapper justification
-                  </span>
                 </div>
               </div>
             </div>
