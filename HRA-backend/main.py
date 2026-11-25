@@ -10,13 +10,18 @@ as a high-performance REST service for the Next.js frontend.
 import os
 import re
 import json
+import hashlib
 import shutil
+import struct
 import tempfile
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, UploadFile, File, HTTPException
+import docx
+import olefile
+from pypdf import PdfReader
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -27,8 +32,6 @@ from btc_rating_model import (
     build_features,
     RatingModel,
     justify,
-    FLAGS,
-    FLAG_GROUP_OF,
 )
 
 app = FastAPI(title="BTC Rating Engine Backend", version="1.0.0")
@@ -44,13 +47,246 @@ app.add_middleware(
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MASTER_DIR = os.getenv("MASTER_DIR", os.path.join(BASE_DIR, "data"))
 ARCHIVE_DIR = os.getenv("ARCHIVE_DIR", os.path.join(MASTER_DIR, "archive"))
+REPORTS_DIR = os.getenv("REPORTS_DIR", os.path.join(MASTER_DIR, "reports"))
 DEFAULT_BSM_PATH = os.path.join(MASTER_DIR, "BSM.xlsx")
 CONFIRMED_RACES_PATH = os.path.join(MASTER_DIR, "confirmed_races.json")
+MODEL_FILE_PATH = os.path.join(BASE_DIR, "btc_rating_model.py")
+
+REPORT_SOURCES = ["stewards", "vet", "starter", "incident"]
+REPORT_TYPE_MAP = {
+    "STIPE": "stewards",
+    "STEWARDS": "stewards",
+    "VETERINARY": "vet",
+    "VET": "vet",
+    "STARTER": "starter",
+    "INCIDENT": "incident",
+    "INCIDENCE": "incident",
+}
 
 # In-memory caches for instant (~30ms) responses
 _cached_bsm = None
 _cached_model = None
+_cached_ev = None
 _training_info = {}
+
+
+def is_use_confirmed_races_enabled() -> bool:
+    val = os.getenv("USE_CONFIRMED_RACES", "true").strip().lower()
+    return val not in ("false", "0", "no", "off")
+
+
+def get_model_file_sha256() -> str:
+    try:
+        h = hashlib.sha256()
+        with open(MODEL_FILE_PATH, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return "unknown"
+
+
+def validate_bsm_file(path: str):
+    """Validates BSM.xlsx structure BEFORE calling client's load_bsm()."""
+    expected_cols = 22
+    try:
+        b = pd.read_excel(path)
+    except Exception as e:
+        raise ValueError(f"Corrupted Excel file: unable to read workbook from {path} ({e})")
+
+    if b.empty:
+        raise ValueError(f"Corrupted or empty file: no data rows found in {path}")
+
+    if b.shape[1] != expected_cols:
+        raise ValueError(
+            f"Corrupted file: expected {expected_cols} columns in BSM, but file has {b.shape[1]}"
+        )
+
+    parsed_dates = pd.to_datetime(b.iloc[:, 1], format="%d/%m/%Y", errors="coerce")
+    if parsed_dates.isna().all():
+        raise ValueError("Corrupted file: no valid dd/mm/yyyy race dates found in 'date' column.")
+
+
+def validate_bwm_file(path: str):
+    """Validates BWM.xlsx structure BEFORE calling client's load_bwm()."""
+    required = [
+        "racedate", "raceseason", "racecat", "raceno", "distance",
+        "currat", "HorseName", "horswgt", "shoe", "startstall",
+        "jockey", "placing", "Timing", "Verdict", "trainer",
+        "pent", "Railing Position",
+    ]
+    try:
+        w = pd.read_excel(path)
+    except Exception as e:
+        raise ValueError(f"Corrupted Excel file: unable to read workbook from {path} ({e})")
+
+    if w.empty:
+        raise ValueError(f"Corrupted or empty file: no rows found in {path}")
+
+    missing = [c for c in required if c not in w.columns]
+    if missing:
+        raise ValueError(f"Corrupted file: missing required BWM columns: {', '.join(missing)}")
+
+    if w["HorseName"].isna().all():
+        raise ValueError("Corrupted file: missing or empty 'HorseName' column.")
+
+
+def _extract_doc_text_pure_python(src_path: str) -> List[str]:
+    """
+    Pure-Python, cross-platform .doc (OLE2 Word 97-2003) text extractor using olefile.
+    Reads the WordDocument FIB + Clx piece table when available, falling back to
+    printable text extraction from the WordDocument stream.
+    """
+    if not olefile.isOleFile(src_path):
+        raise ValueError("File is not a valid binary .doc (OLE2) document.")
+
+    with olefile.OleFileIO(src_path) as ole:
+        if not ole.exists("WordDocument"):
+            raise ValueError("Missing WordDocument stream in .doc file.")
+        word_stream = ole.openstream("WordDocument").read()
+
+        # Check FIB flags (offset 0x0A, bit 0x0200 selects 1Table vs 0Table)
+        flags = struct.unpack_from("<H", word_stream, 0x0A)[0] if len(word_stream) >= 0x0C else 0
+        table_name = "1Table" if (flags & 0x0200) else "0Table"
+
+        text = ""
+        # Try FIB ccpText + fcClx/lcbClx piece table (Word 97-2003)
+        if ole.exists(table_name) and len(word_stream) >= 0x1A6:
+            try:
+                table_stream = ole.openstream(table_name).read()
+                fc_clx, lcb_clx = struct.unpack_from("<II", word_stream, 0x1A2)
+                if lcb_clx > 0 and fc_clx + lcb_clx <= len(table_stream):
+                    clx = table_stream[fc_clx : fc_clx + lcb_clx]
+                    pos = 0
+                    while pos < len(clx):
+                        clxt = clx[pos]
+                        if clxt == 1:  # Prc
+                            cb = struct.unpack_from("<H", clx, pos + 1)[0]
+                            pos += 3 + cb
+                        elif clxt == 2:  # Pcdt
+                            lcb = struct.unpack_from("<I", clx, pos + 1)[0]
+                            pcdt = clx[pos + 5 : pos + 5 + lcb]
+                            n_pieces = (len(pcdt) - 4) // 12
+                            cps = struct.unpack_from(f"<{n_pieces + 1}I", pcdt, 0)
+                            pieces = []
+                            pcd_offset = (n_pieces + 1) * 4
+                            for i in range(n_pieces):
+                                _, fc, _ = struct.unpack_from("<HIH", pcdt, pcd_offset + i * 8)
+                                cp_len = cps[i + 1] - cps[i]
+                                is_ansi = bool(fc & 0x40000000)
+                                real_fc = (fc & 0x3FFFFFFF) // 2 if is_ansi else (fc & 0x3FFFFFFF)
+                                byte_len = cp_len if is_ansi else cp_len * 2
+                                chunk = word_stream[real_fc : real_fc + byte_len]
+                                pieces.append(chunk.decode("cp1252" if is_ansi else "utf-16-le", errors="replace"))
+                            text = "".join(pieces)
+                            break
+                        else:
+                            break
+            except Exception:
+                text = ""
+
+        if not text:
+            # Fallback: extract printable ASCII/Latin runs from WordDocument stream
+            text = word_stream.decode("cp1252", errors="ignore")
+            text = re.sub(r"[^\x20-\x7E\r\n\t]", "\n", text)
+
+    lines = []
+    for raw_line in re.split(r"[\r\n\x0b\x07]+", text):
+        cleaned = re.sub(r"[\x00-\x08\x0c\x0e-\x1f]", "", raw_line).strip()
+        if cleaned:
+            lines.append(cleaned)
+    return lines
+
+
+def convert_report_to_docx(src_path: str, dst_docx_path: str):
+    """
+    Pure-Python, cross-platform converter (Windows, Ubuntu, macOS) that converts
+    .docx, .doc, .pdf, .txt, .xlsx, .xls, .csv into a .docx file
+    so the client's mine_reports() / python-docx reader can read it.
+    """
+    ext = os.path.splitext(src_path)[1].lower()
+    os.makedirs(os.path.dirname(dst_docx_path), exist_ok=True)
+
+    if ext == ".docx":
+        shutil.copy2(src_path, dst_docx_path)
+        return
+
+    doc = docx.Document()
+
+    if ext == ".doc":
+        for line in _extract_doc_text_pure_python(src_path):
+            doc.add_paragraph(line)
+        doc.save(dst_docx_path)
+        return
+
+    if ext == ".pdf":
+        reader = PdfReader(src_path)
+        for page in reader.pages:
+            page_text = page.extract_text() or ""
+            for line in page_text.splitlines():
+                line = line.strip()
+                if line:
+                    doc.add_paragraph(line)
+        doc.save(dst_docx_path)
+        return
+
+    if ext == ".txt":
+        with open(src_path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    doc.add_paragraph(line)
+        doc.save(dst_docx_path)
+        return
+
+    if ext in (".xlsx", ".xls", ".csv"):
+        df = pd.read_csv(src_path) if ext == ".csv" else pd.read_excel(src_path)
+        if not df.empty:
+            cols = [str(c) for c in df.columns]
+            table = doc.add_table(rows=1, cols=len(cols))
+            for i, c in enumerate(cols):
+                table.rows[0].cells[i].text = c
+            for _, row in df.iterrows():
+                row_cells = table.add_row().cells
+                for i, val in enumerate(row):
+                    row_cells[i].text = "" if pd.isna(val) else str(val).strip()
+        doc.save(dst_docx_path)
+        return
+
+    raise ValueError(f"Unsupported report format: {ext}")
+
+
+def load_all_report_events(horse_names: set) -> pd.DataFrame:
+    """
+    Calls the client's mine_reports() on every stored .docx report file under REPORTS_DIR,
+    combines results, deduplicates by (horse, date, flag, source), and preserves all report days.
+    """
+    frames = []
+    all_days = set()
+
+    for src in REPORT_SOURCES:
+        src_dir = os.path.join(REPORTS_DIR, src)
+        if not os.path.isdir(src_dir):
+            continue
+        files = sorted(f for f in os.listdir(src_dir) if f.lower().endswith(".docx"))
+        for fname in files:
+            fpath = os.path.join(src_dir, fname)
+            try:
+                ev_part = mine_reports({src: fpath}, horse_names)
+                all_days.update(ev_part.attrs.get("days", []))
+                if ev_part is not None and not ev_part.empty:
+                    frames.append(ev_part)
+            except Exception as e:
+                print(f"⚠️ [BACKEND] Failed to mine report {fpath}: {e}")
+
+    if frames:
+        ev = pd.concat(frames, ignore_index=True)
+        ev = ev.drop_duplicates(subset=["horse", "date", "flag"], keep="first").reset_index(drop=True)
+    else:
+        ev = pd.DataFrame()
+
+    ev.attrs["days"] = sorted(all_days)
+    return ev
 
 
 def load_confirmed_races_as_df() -> pd.DataFrame:
@@ -90,12 +326,11 @@ def load_confirmed_races_as_df() -> pd.DataFrame:
                     "place": entry.get("placing"),
                     "timing": entry.get("timing"),
                     "verdict": entry.get("verdict"),
-                    "chg": entry.get("confirmed_change", 0),  # Official confirmed decision
+                    "chg": entry.get("confirmed_change", 0),
                     "trainer": entry.get("trainer", "Unknown"),
                     "pent": entry.get("penetrometer", ""),
                     "rail": entry.get("railing", "original position"),
                     "is_target": False,
-                    "src_row": 0,
                 })
         return pd.DataFrame(rows)
     except Exception as e:
@@ -131,23 +366,32 @@ def sync_master_from_ftp_if_configured():
 
 
 def get_base_data_and_model(force_reload: bool = False):
-    global _cached_bsm, _cached_model, _training_info
+    global _cached_bsm, _cached_model, _cached_ev, _training_info
     if _cached_bsm is None or force_reload:
         sync_master_from_ftp_if_configured()
     if (_cached_bsm is None or force_reload) and os.path.exists(DEFAULT_BSM_PATH):
         print(f"📂 [BACKEND] Loading baseline historical BSM dataset from {DEFAULT_BSM_PATH}...")
+        validate_bsm_file(DEFAULT_BSM_PATH)
         raw_bsm = load_bsm(DEFAULT_BSM_PATH)
-        confirmed_df = load_confirmed_races_as_df()
+        use_confirmed = is_use_confirmed_races_enabled()
+        confirmed_df = load_confirmed_races_as_df() if use_confirmed else pd.DataFrame()
 
         if not confirmed_df.empty:
             print(f"📈 [BACKEND] Augmenting training set with {len(confirmed_df)} confirmed handicapper runs...")
             _cached_bsm = pd.concat([raw_bsm, confirmed_df], ignore_index=True)
             _cached_bsm["horse"] = _cached_bsm["horse"].astype(str).str.strip()
         else:
-            _cached_bsm = raw_bsm
+            _cached_bsm = raw_bsm.copy()
+            _cached_bsm["horse"] = _cached_bsm["horse"].astype(str).str.strip()
 
-        print(f"⚡ [BACKEND] Training hybrid RatingModel on {len(_cached_bsm)} total historical runs...")
-        feat = build_features(_cached_bsm, None)
+        names = set(_cached_bsm["horse"].dropna().astype(str).str.strip())
+        _cached_ev = load_all_report_events(names)
+
+        print(
+            f"⚡ [BACKEND] Training hybrid RatingModel on {len(_cached_bsm)} runs "
+            f"with {len(_cached_ev)} report events (USE_CONFIRMED_RACES={use_confirmed})..."
+        )
+        feat = build_features(_cached_bsm, _cached_ev)
         _cached_model = RatingModel(use_text=True).fit(feat[~feat["is_target"]])
 
         valid_dates = _cached_bsm["d"].dropna()
@@ -158,11 +402,17 @@ def get_base_data_and_model(force_reload: bool = False):
             "master_entries": len(_cached_bsm),
             "baseline_bsm_entries": len(raw_bsm),
             "confirmed_entries_incorporated": len(confirmed_df),
+            "use_confirmed_races": use_confirmed,
+            "report_events_loaded": len(_cached_ev),
+            "model_sha256": get_model_file_sha256(),
             "min_date": min_date,
             "max_date": max_date,
             "trained_at": datetime.now().isoformat(),
         }
-        print(f"✅ [BACKEND] Hybrid RatingModel ready! ({len(_cached_bsm)} entries, {min_date} to {max_date})")
+        print(
+            f"✅ [BACKEND] Hybrid RatingModel ready! ({len(_cached_bsm)} entries, "
+            f"{len(_cached_ev)} report events, {min_date} to {max_date})"
+        )
 
     return _cached_bsm, _cached_model
 
@@ -187,13 +437,12 @@ async def upload_master(file: UploadFile = File(...)):
     if not contents or len(contents) == 0:
         raise HTTPException(status_code=400, detail="Corrupted or empty file: uploaded file contains 0 bytes.")
 
-    # 1. Write to temporary file to test for corruption BEFORE touching active master
     temp_path = os.path.join(MASTER_DIR, f"temp_upload_{datetime.now().timestamp()}.xlsx")
     try:
         with open(temp_path, "wb") as f:
             f.write(contents)
 
-        # Test corruption and validate structure
+        validate_bsm_file(temp_path)
         test_df = load_bsm(temp_path)
         if test_df is None or test_df.empty:
             raise ValueError("File contains no valid historical race rows.")
@@ -205,7 +454,6 @@ async def upload_master(file: UploadFile = File(...)):
             detail=f"Corruption detected in Master file: {str(e)}. Existing master dataset was preserved."
         )
 
-    # 2. Archive previous master if valid
     archived_filename = None
     if os.path.exists(DEFAULT_BSM_PATH):
         ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -214,11 +462,10 @@ async def upload_master(file: UploadFile = File(...)):
         shutil.move(DEFAULT_BSM_PATH, archived_path)
         print(f"📦 [BACKEND] Archived previous master to: {archived_path}")
 
-    # 3. Promote validated temp file to current master
     shutil.move(temp_path, DEFAULT_BSM_PATH)
     print(f"💾 [BACKEND] Promoted new validated master BSM to: {DEFAULT_BSM_PATH} ({len(contents)} bytes)")
 
-    bsm, model = get_base_data_and_model(force_reload=True)
+    bsm, _ = get_base_data_and_model(force_reload=True)
 
     return {
         "success": True,
@@ -227,6 +474,54 @@ async def upload_master(file: UploadFile = File(...)):
         "archived_as": archived_filename,
         "training_info": _training_info,
     }
+
+
+@app.post("/api/upload-report")
+async def upload_report(
+    report_type: str = Form(...),
+    file: UploadFile = File(...),
+):
+    """
+    Stores an uploaded report cumulatively under data/reports/<type>/ as .docx
+    (converting PDF, Excel, CSV, text, or .doc first), mines all stored reports,
+    and retrains the model.
+    """
+    src = REPORT_TYPE_MAP.get(report_type.strip().upper(), report_type.strip().lower())
+    if src not in REPORT_SOURCES:
+        raise HTTPException(status_code=400, detail=f"Unsupported report_type: {report_type}")
+
+    contents = await file.read()
+    if not contents:
+        raise HTTPException(status_code=400, detail="Uploaded report file is empty.")
+
+    temp_dir = tempfile.mkdtemp()
+    try:
+        orig_name = os.path.basename(file.filename or "report.docx")
+        raw_path = os.path.join(temp_dir, orig_name)
+        with open(raw_path, "wb") as f:
+            f.write(contents)
+
+        stem = os.path.splitext(orig_name)[0]
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        target_dir = os.path.join(REPORTS_DIR, src)
+        os.makedirs(target_dir, exist_ok=True)
+        dst_docx_path = os.path.join(target_dir, f"{ts}_{stem}.docx")
+
+        convert_report_to_docx(raw_path, dst_docx_path)
+
+        get_base_data_and_model(force_reload=True)
+
+        return {
+            "success": True,
+            "report_type": src,
+            "stored_file": os.path.basename(dst_docx_path),
+            "report_events_loaded": _training_info.get("report_events_loaded", 0),
+            "training_info": _training_info,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to process report: {e}")
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 @app.post("/api/sync-confirmed-race")
@@ -243,10 +538,9 @@ def sync_confirmed_race(payload: Dict[str, Any]):
                 all_confirmed = json.load(f)
                 if not isinstance(all_confirmed, list):
                     all_confirmed = []
-        except:
+        except Exception:
             all_confirmed = []
 
-    # Replace existing record for this race if already present, or append
     venue = payload.get("venue", "BNG")
     r_date = payload.get("race_date")
     r_no = payload.get("race_no")
@@ -260,57 +554,87 @@ def sync_confirmed_race(payload: Dict[str, Any]):
     with open(CONFIRMED_RACES_PATH, "w", encoding="utf-8") as f:
         json.dump(all_confirmed, f, indent=2)
 
-    # Retrain model with newly confirmed race
-    get_base_data_and_model(force_reload=True)
+    if is_use_confirmed_races_enabled():
+        get_base_data_and_model(force_reload=True)
 
     return {
         "success": True,
-        "message": f"Confirmed decisions for {venue} Race #{r_no} incorporated into model training.",
+        "message": f"Confirmed decisions for {venue} Race #{r_no} saved.",
         "total_confirmed_races": len(all_confirmed),
+        "use_confirmed_races": is_use_confirmed_races_enabled(),
     }
 
 
 @app.get("/api/model-info")
 def get_model_info():
-    """Returns metadata about the active training set, entries count, and dates."""
+    """Returns metadata about the active training set, entries count, report events, and model hash."""
     bsm, _ = get_base_data_and_model()
     is_loaded = bsm is not None and not bsm.empty
     return {
         "success": True,
         "master_data_loaded": is_loaded,
         "master_entries": len(bsm) if is_loaded else 0,
+        "model_sha256": _training_info.get("model_sha256") or get_model_file_sha256(),
+        "report_events_loaded": _training_info.get("report_events_loaded", 0),
+        "use_confirmed_races": _training_info.get("use_confirmed_races", is_use_confirmed_races_enabled()),
         "training_info": _training_info,
     }
 
 
-class EntrantPayload(BaseModel):
+class MeetingEntrantPayload(BaseModel):
     entry_id: Optional[int] = None
+    race_id: Optional[int] = None
+    racedate: str
+    season: Optional[str] = "2026-27"
+    category: str
+    raceno: int
+    distance: int
+    currat: Optional[float] = None
     horse_name: str
-    current_rating: Optional[float] = None
+    horse_weight: Optional[Any] = None
+    shoes: Optional[str] = "A"
+    gate: Optional[int] = None
+    jockey: Optional[str] = "Unknown"
     placing: Optional[int] = None
     timing: Optional[str] = None
     verdict: Optional[Any] = None
-    weight_carried: Optional[float] = None
-    horse_weight: Optional[float] = None
-    shoes: Optional[str] = None
-    gate: Optional[int] = None
-    jockey: Optional[str] = None
-    trainer: Optional[str] = None
-    starter_remark: Optional[str] = None
-    vet_remark: Optional[str] = None
-    incident_remark: Optional[str] = None
+    trainer: Optional[str] = "Unknown"
+    penetrometer: Optional[Any] = None
+    railing: Optional[Any] = None
 
 
-class RacePayload(BaseModel):
-    venue: Optional[str] = "BNG"
-    race_date: str
-    season: Optional[str] = "2026-27"
-    category: str
-    race_no: int
-    distance: int
-    penetrometer: Optional[str] = None
-    railing: Optional[str] = None
-    entries: List[EntrantPayload]
+class MeetingPayload(BaseModel):
+    entries: List[MeetingEntrantPayload]
+
+
+class ReportEvidenceRequest(BaseModel):
+    horses: List[str] = []
+
+
+@app.post("/api/report-evidence")
+def get_report_evidence(payload: ReportEvidenceRequest):
+    """
+    Returns mined report evidence rows matching the client's 'Report Evidence' sheet:
+    ['Horse', 'Report date', 'Source', 'Flag', 'Remark (truncated)'], sorted by horse, date.
+    """
+    bsm, _ = get_base_data_and_model()
+    bsm_names = set(bsm["horse"].dropna().astype(str).str.strip()) if bsm is not None else set()
+    req_names = {str(h).strip() for h in payload.horses if str(h).strip()}
+    ev = load_all_report_events(bsm_names | req_names)
+
+    rows = []
+    if ev is not None and not ev.empty:
+        filtered = ev[ev["horse"].isin(req_names)] if req_names else ev
+        for _, e in filtered.sort_values(["horse", "date"]).iterrows():
+            rows.append({
+                "horse": e["horse"],
+                "report_date": str(e["date"].date()),
+                "source": e["source"],
+                "flag": e["flag"],
+                "remark": e["text"],
+            })
+
+    return {"success": True, "evidence": rows}
 
 
 @app.get("/health")
@@ -328,14 +652,17 @@ def health():
 @app.get("/api/accuracy")
 def get_model_accuracy(split: str = "2026-05-01"):
     """
-    Returns chronological hold-out validation metrics for the BTC hybrid model.
+    Returns chronological hold-out validation metrics for the BTC hybrid model
+    using the exact same master + report events data as training.
     """
     bsm, _ = get_base_data_and_model()
     if bsm is None:
         raise HTTPException(status_code=500, detail="Master history dataset is not loaded.")
 
     try:
-        feat = build_features(bsm, None)
+        names = set(bsm["horse"].dropna().astype(str).str.strip())
+        ev = _cached_ev if _cached_ev is not None else load_all_report_events(names)
+        feat = build_features(bsm, ev)
         tr = feat[(~feat["is_target"]) & (feat["d"] < split)]
         te = feat[(~feat["is_target"]) & (feat["d"] >= split) & feat["runner"] & feat["y"].notna() & (feat["rat"] > 0)]
 
@@ -367,10 +694,12 @@ def get_model_accuracy(split: str = "2026-05-01"):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@app.post("/api/predict-race")
-def predict_race(payload: RacePayload):
+@app.post("/api/predict-meeting")
+def predict_meeting(payload: MeetingPayload):
     """
-    Direct JSON API used by Next.js to rate entrants of an open race in the database.
+    Rates an entire meeting (all races and dates together in one request)
+    by building the DataFrame identically to client's load_bwm() and running
+    build_features, model.predict, text_effect, and justify identically to client's main().
     """
     bsm, model = get_base_data_and_model()
     if bsm is None or model is None:
@@ -380,62 +709,37 @@ def predict_race(payload: RacePayload):
         )
 
     try:
-        r_date = pd.to_datetime(payload.race_date, errors="coerce")
-        bwm_rows = []
-        ev_rows = []
+        bwm = pd.DataFrame({
+            "d": pd.to_datetime([e.racedate for e in payload.entries], errors="coerce"),
+            "season": [e.season for e in payload.entries],
+            "cat": [e.category for e in payload.entries],
+            "raceno": [e.raceno for e in payload.entries],
+            "dist": [e.distance for e in payload.entries],
+            "rating": [e.currat for e in payload.entries],
+            "horse": [str(e.horse_name).strip() for e in payload.entries],
+            "hw": [e.horse_weight for e in payload.entries],
+            "shoe": [e.shoes for e in payload.entries],
+            "gate": [e.gate for e in payload.entries],
+            "jockey": [e.jockey for e in payload.entries],
+            "place": [e.placing for e in payload.entries],
+            "timing": [e.timing for e in payload.entries],
+            "verdict": [e.verdict for e in payload.entries],
+            "chg": np.nan,
+            "trainer": [e.trainer for e in payload.entries],
+            "pent": [e.penetrometer for e in payload.entries],
+            "rail": [e.railing for e in payload.entries],
+            "is_target": True,
+        })
+        bwm["src_row"] = np.arange(len(bwm))
 
-        for idx, entry in enumerate(payload.entries):
-            h_name = entry.horse_name.strip()
-            bwm_rows.append({
-                "d": r_date,
-                "season": payload.season or "2026-27",
-                "cat": payload.category,
-                "raceno": payload.race_no,
-                "dist": payload.distance,
-                "rating": entry.current_rating,
-                "horse": h_name,
-                "hw": entry.horse_weight,
-                "shoe": entry.shoes or "A",
-                "gate": entry.gate,
-                "jockey": entry.jockey or "Unknown",
-                "place": entry.placing,
-                "timing": entry.timing,
-                "verdict": entry.verdict,
-                "chg": np.nan,
-                "trainer": entry.trainer or "Unknown",
-                "pent": payload.penetrometer or "",
-                "rail": payload.railing or "original position",
-                "is_target": True,
-                "src_row": idx,
-            })
-
-            remarks = [
-                ("starter", entry.starter_remark),
-                ("vet", entry.vet_remark),
-                ("incident", entry.incident_remark),
-            ]
-            for src, txt in remarks:
-                if not txt:
-                    continue
-                for fl, rg in FLAGS:
-                    if rg.search(txt):
-                        ev_rows.append({
-                            "horse": h_name,
-                            "date": pd.Timestamp(r_date),
-                            "raceno": payload.race_no,
-                            "flag": fl,
-                            "source": src,
-                            "text": txt[:400],
-                        })
-
-        bwm = pd.DataFrame(bwm_rows)
-        ev = pd.DataFrame(ev_rows) if ev_rows else pd.DataFrame(columns=["horse", "date", "raceno", "flag", "source", "text"])
-        ev.attrs["days"] = [pd.Timestamp(r_date)] if not ev.empty else []
+        names = set(bsm["horse"].dropna().astype(str).str.strip()) | set(bwm["horse"].str.strip())
+        ev = load_all_report_events(names)
 
         all_rows = pd.concat([bsm, bwm], ignore_index=True)
         all_rows["horse"] = all_rows["horse"].str.strip()
         feat = build_features(all_rows, ev)
 
+        model = RatingModel(use_text=True).fit(feat[~feat["is_target"]])
         tgt = feat[feat["is_target"]].copy()
         tgt = model.predict(tgt)
         tgt["text_eff"] = model.text_effect(tgt)
@@ -445,7 +749,9 @@ def predict_race(payload: RacePayload):
         ev_by_h = {h: g for h, g in ev.groupby("horse")} if len(ev) else {}
 
         results = []
-        for i, (_, r) in enumerate(tgt.iterrows()):
+        for _, r in tgt.iterrows():
+            src_idx = int(r["src_row"])
+            orig_entry = payload.entries[src_idx]
             eh = ev_by_h.get(r["horse"])
             if eh is not None:
                 eh = eh[(eh["date"] < r["d"]) & (eh["date"] >= r["d"] - pd.Timedelta(days=365))]
@@ -455,11 +761,12 @@ def predict_race(payload: RacePayload):
             cur_rat = None if pd.isna(r["rating"]) else int(r["rating"])
             new_rat = cur_rat if not r["runner"] else (None if cur_rat is None else int(max(0, cur_rat + rec_chg)))
 
-            orig_entry = payload.entries[i] if i < len(payload.entries) else None
-
             results.append({
-                "entry_id": orig_entry.entry_id if orig_entry else None,
+                "entry_id": orig_entry.entry_id,
+                "race_id": orig_entry.race_id,
                 "horse_name": r["horse"],
+                "race_date": str(r["d"].date()) if pd.notna(r["d"]) else None,
+                "raceno": int(r["raceno"]) if pd.notna(r["raceno"]) else None,
                 "placing": int(r["place"]) if pd.notna(r["place"]) else None,
                 "current_rating": cur_rat,
                 "recommended_change": rec_chg,
@@ -470,8 +777,8 @@ def predict_race(payload: RacePayload):
 
         return {
             "success": True,
-            "race_no": payload.race_no,
             "total_horses": len(results),
+            "report_events_loaded": len(ev),
             "ratings": results,
         }
 
@@ -499,54 +806,70 @@ async def rate_meeting(
         with open(bwm_path, "wb") as f:
             f.write(await race_file.read())
 
+        report_paths = {"stewards": None, "vet": None, "starter": None, "incident": None}
+
+        if stipe_file and stipe_file.filename:
+            raw_p = os.path.join(temp_dir, stipe_file.filename)
+            with open(raw_p, "wb") as f:
+                f.write(await stipe_file.read())
+            docx_p = os.path.join(temp_dir, "stewards.docx")
+            convert_report_to_docx(raw_p, docx_p)
+            report_paths["stewards"] = docx_p
+
+        if vet_file and vet_file.filename:
+            raw_p = os.path.join(temp_dir, vet_file.filename)
+            with open(raw_p, "wb") as f:
+                f.write(await vet_file.read())
+            docx_p = os.path.join(temp_dir, "vet.docx")
+            convert_report_to_docx(raw_p, docx_p)
+            report_paths["vet"] = docx_p
+
+        if starter_file and starter_file.filename:
+            raw_p = os.path.join(temp_dir, starter_file.filename)
+            with open(raw_p, "wb") as f:
+                f.write(await starter_file.read())
+            docx_p = os.path.join(temp_dir, "starter.docx")
+            convert_report_to_docx(raw_p, docx_p)
+            report_paths["starter"] = docx_p
+
+        if incidence_file and incidence_file.filename:
+            raw_p = os.path.join(temp_dir, incidence_file.filename)
+            with open(raw_p, "wb") as f:
+                f.write(await incidence_file.read())
+            docx_p = os.path.join(temp_dir, "incident.docx")
+            convert_report_to_docx(raw_p, docx_p)
+            report_paths["incident"] = docx_p
+
+        validate_bwm_file(bwm_path)
+        bwm = load_bwm(bwm_path)
+
         if history_file is not None and history_file.filename:
             bsm_path = os.path.join(temp_dir, history_file.filename)
             with open(bsm_path, "wb") as f:
                 f.write(await history_file.read())
+            validate_bsm_file(bsm_path)
             bsm = load_bsm(bsm_path)
-            all_rows_for_model = build_features(bsm, None)
-            model = RatingModel(use_text=True).fit(all_rows_for_model[~all_rows_for_model["is_target"]])
+            names = set(bsm["horse"].dropna().str.strip()) | set(bwm["horse"].str.strip())
+            ev = mine_reports(report_paths, names)
+            all_rows = pd.concat([bsm, bwm], ignore_index=True)
+            all_rows["horse"] = all_rows["horse"].str.strip()
+            feat = build_features(all_rows, ev)
+            model = RatingModel(use_text=True).fit(feat[~feat["is_target"]])
         elif os.path.exists(DEFAULT_BSM_PATH):
             bsm, model = get_base_data_and_model()
+            names = set(bsm["horse"].dropna().str.strip()) | set(bwm["horse"].str.strip())
+            if any(report_paths.values()):
+                ev = mine_reports(report_paths, names)
+            else:
+                ev = load_all_report_events(names)
+            all_rows = pd.concat([bsm, bwm], ignore_index=True)
+            all_rows["horse"] = all_rows["horse"].str.strip()
+            feat = build_features(all_rows, ev)
         else:
             raise HTTPException(
                 status_code=400,
                 detail="Master history file (BSM.xlsx) not provided and default not found.",
             )
-
-        report_paths = {"stewards": None, "vet": None, "starter": None, "incident": None}
-
-        if stipe_file and stipe_file.filename:
-            p = os.path.join(temp_dir, stipe_file.filename)
-            with open(p, "wb") as f:
-                f.write(await stipe_file.read())
-            report_paths["stewards"] = p
-
-        if vet_file and vet_file.filename:
-            p = os.path.join(temp_dir, vet_file.filename)
-            with open(p, "wb") as f:
-                f.write(await vet_file.read())
-            report_paths["vet"] = p
-
-        if starter_file and starter_file.filename:
-            p = os.path.join(temp_dir, starter_file.filename)
-            with open(p, "wb") as f:
-                f.write(await starter_file.read())
-            report_paths["starter"] = p
-
-        if incidence_file and incidence_file.filename:
-            p = os.path.join(temp_dir, incidence_file.filename)
-            with open(p, "wb") as f:
-                f.write(await incidence_file.read())
-            report_paths["incident"] = p
-
-        bwm = load_bwm(bwm_path)
-        names = set(bsm["horse"].dropna().str.strip()) | set(bwm["horse"].str.strip())
-        ev = mine_reports(report_paths, names)
-
-        all_rows = pd.concat([bsm, bwm], ignore_index=True)
-        all_rows["horse"] = all_rows["horse"].str.strip()
-        feat = build_features(all_rows, ev)
 
         tgt = feat[feat["is_target"]].copy()
         tgt = model.predict(tgt)
@@ -601,7 +924,6 @@ async def rate_meeting(
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
     finally:
-        import shutil
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 

@@ -203,6 +203,49 @@ export async function GET(request) {
       }
     }
 
+    const buffer_horses = new Set();
+    for (const race of races) {
+      for (const entry of race.entries) {
+        if (entry.horse?.name) buffer_horses.add(entry.horse.name.trim());
+      }
+    }
+
+    // Add "Report Evidence" sheet matching client's Output.xlsx
+    const evidenceSheet = workbook.addWorksheet("Report Evidence");
+    evidenceSheet.columns = [
+      { header: "Horse", key: "horse", width: 24 },
+      { header: "Report date", key: "reportDate", width: 14 },
+      { header: "Source", key: "source", width: 14 },
+      { header: "Flag", key: "flag", width: 20 },
+      { header: "Remark (truncated)", key: "remark", width: 120 },
+    ];
+    evidenceSheet.getRow(1).font = { bold: true };
+
+    try {
+      const PYTHON_BACKEND_URL = process.env.PYTHON_BACKEND_URL || "http://127.0.0.1:8000";
+      const evRes = await fetch(`${PYTHON_BACKEND_URL}/api/report-evidence`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ horses: Array.from(buffer_horses) }),
+      });
+      if (evRes.ok) {
+        const evData = await evRes.json();
+        if (evData.success && Array.isArray(evData.evidence)) {
+          for (const evRow of evData.evidence) {
+            evidenceSheet.addRow({
+              horse: evRow.horse,
+              reportDate: evRow.report_date,
+              source: evRow.source,
+              flag: evRow.flag,
+              remark: evRow.remark,
+            });
+          }
+        }
+      }
+    } catch (evErr) {
+      console.warn("Could not fetch report evidence from Python backend for export:", evErr.message);
+    }
+
     const buffer = await workbook.xlsx.writeBuffer();
 
     const fileName =

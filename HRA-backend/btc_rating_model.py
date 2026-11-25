@@ -82,87 +82,26 @@ def rail_width(txt):
 def load_bsm(path):
     cols = ["venue", "date", "season", "cat", "raceno", "card", "dist", "rating", "horse", "hw", "shoe",
             "gate", "wdecl", "jockey", "wcar", "place", "timing", "verdict", "chg", "trainer", "pent", "rail"]
-    try:
-        b = pd.read_excel(path)
-    except Exception as e:
-        raise ValueError(f"Corrupted Excel file: unable to read workbook from {path} ({e})")
-
-    if b.empty:
-        raise ValueError(f"Corrupted or empty file: no data rows found in {path}")
-
-    # Check for corrupted columns structure
-    if b.shape[1] >= len(cols):
-        b = b.iloc[:, :len(cols)]
-        b.columns = cols
-    elif b.shape[1] < len(cols) - 4:
-        raise ValueError(f"Corrupted file: expected at least {len(cols)-4} columns, but file only has {b.shape[1]}")
-    else:
-        for i in range(b.shape[1], len(cols)):
-            b[cols[i]] = np.nan
-        b.columns = cols
-
-    # Clean corrupted dates and values
-    b["d"] = pd.to_datetime(b["date"], errors="coerce")
+    b = pd.read_excel(path)
+    b.columns = cols
+    b["d"] = pd.to_datetime(b["date"], format="%d/%m/%Y", errors="coerce")
     b = b.dropna(subset=["d"]).copy()
-    if b.empty:
-        raise ValueError("Corrupted file: no valid race dates found in 'date' column.")
-
     b["is_target"] = False
-    b["chg"] = pd.to_numeric(b["chg"], errors="coerce")
     b.loc[b["chg"] < -100, "chg"] = np.nan          # -999 sentinel
-    b["rating"] = pd.to_numeric(b["rating"], errors="coerce")
-    b["dist"] = pd.to_numeric(b["dist"], errors="coerce").fillna(1200)
-    b["horse"] = b["horse"].astype(str).str.strip()
     return b[["d", "season", "cat", "raceno", "dist", "rating", "horse", "hw", "shoe", "gate", "jockey",
               "place", "timing", "verdict", "chg", "trainer", "pent", "rail", "is_target"]]
 
 
 def load_bwm(path):
-    try:
-        w = pd.read_excel(path)
-    except Exception as e:
-        raise ValueError(f"Corrupted Excel file: unable to read workbook from {path} ({e})")
-
-    if w.empty:
-        raise ValueError(f"Corrupted or empty file: no rows found in {path}")
-
-    # Normalize column names for robust matching
-    norm_cols = {str(c).strip().lower(): c for c in w.columns}
-
-    def get_col(candidates, default_val=None):
-        for cand in candidates:
-            if cand.lower() in norm_cols:
-                return w[norm_cols[cand.lower()]]
-        if default_val is not None:
-            return pd.Series([default_val] * len(w), index=w.index)
-        return pd.Series([np.nan] * len(w), index=w.index)
-
-    horse_col = get_col(["HorseName", "horse", "name"])
-    if horse_col.isna().all():
-        raise ValueError("Corrupted file: missing or corrupted 'HorseName' column.")
-
+    w = pd.read_excel(path)
     out = pd.DataFrame({
-        "d": pd.to_datetime(get_col(["racedate", "date"]), errors="coerce"),
-        "season": get_col(["raceseason", "season"], "2026-27"),
-        "cat": get_col(["racecat", "category"], "00-25"),
-        "raceno": pd.to_numeric(get_col(["raceno", "race_no"]), errors="coerce").fillna(1).astype(int),
-        "dist": pd.to_numeric(get_col(["distance", "dist"]), errors="coerce").fillna(1200),
-        "rating": pd.to_numeric(get_col(["currat", "rating"]), errors="coerce"),
-        "horse": horse_col.astype(str).str.strip(),
-        "hw": pd.to_numeric(get_col(["horswgt", "hw"]), errors="coerce"),
-        "shoe": get_col(["shoe", "shoes"], "A"),
-        "gate": pd.to_numeric(get_col(["startstall", "gate"]), errors="coerce"),
-        "jockey": get_col(["jockey"], "Unknown"),
-        "place": pd.to_numeric(get_col(["placing", "place"]), errors="coerce"),
-        "timing": get_col(["Timing", "timing"]),
-        "verdict": get_col(["Verdict", "verdict"]),
-        "chg": np.nan,
-        "trainer": get_col(["trainer"], "Unknown"),
-        "pent": get_col(["pent", "penetrometer"], ""),
-        "rail": get_col(["Railing Position", "rail"], "original position"),
-        "is_target": True
-    })
-    out["src_row"] = np.arange(len(out))
+        "d": pd.to_datetime(w["racedate"], format="%d/%m/%Y", errors="coerce"),
+        "season": w["raceseason"], "cat": w["racecat"], "raceno": w["raceno"], "dist": w["distance"],
+        "rating": w["currat"], "horse": w["HorseName"], "hw": w["horswgt"], "shoe": w["shoe"],
+        "gate": w["startstall"], "jockey": w["jockey"], "place": w["placing"], "timing": w["Timing"],
+        "verdict": w["Verdict"], "chg": np.nan, "trainer": w["trainer"], "pent": w["pent"],
+        "rail": w["Railing Position"], "is_target": True})
+    out["src_row"] = np.arange(len(out))             # row order in the original sheet
     return out
 
 

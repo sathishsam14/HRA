@@ -6,7 +6,7 @@
 
 import mammoth from "mammoth";
 import db from "../db.js";
-import { rateAndSaveRace } from "../rate.js";
+import { rateMeeting } from "../rate.js";
 import { readReportFile } from "./readReportFile.js";
 
 export const MONTHS = {
@@ -485,12 +485,12 @@ export async function processWordReport({ buffer, reportType, fileName = "report
     }
   }
 
-  // 6. Re-rate affected open races
-  for (const raceId of affectedRaceIds) {
+  // 6. Re-rate the whole open meeting once after report upload
+  if (affectedRaceIds.size > 0) {
     try {
-      await rateAndSaveRace(raceId, prisma);
+      await rateMeeting(prisma);
     } catch (err) {
-      console.warn(`Auto re-rate warning for race #${raceId} after report upload:`, err.message);
+      console.warn(`Auto re-rate warning after report upload:`, err.message);
     }
   }
 

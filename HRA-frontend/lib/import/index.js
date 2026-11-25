@@ -13,7 +13,7 @@ import unzipper from "unzipper";
 import mammoth from "mammoth";
 import db from "../db.js";
 import { raceType } from "../rate.js";
-import { rateAndSaveRace, reRateAllOpenRaces } from "../rate.js";
+import { rateMeeting, reRateAllOpenRaces } from "../rate.js";
 import { normalizeHeader, HEADER_ALIASES, matchHeaderKey } from "./aliases.js";
 import { processWordReport } from "../reports/parseReports.js";
 import { saveRaceExtras, getEntryKey } from "../rating/raceExtras.js";
@@ -878,6 +878,26 @@ export async function importFile({ fileName, buffer, fileType, uploadedBy, sourc
         unmatched: [],
         message: "Invalid file format. Accepted formats: Word, PDF, Excel, CSV, text.",
       };
+    }
+
+    // Forward report to Python backend so it is stored cumulatively, converted to .docx, mined, and triggers retrain
+    try {
+      const PYTHON_BACKEND_URL = process.env.PYTHON_BACKEND_URL || "http://127.0.0.1:8000";
+      const pyForm = new FormData();
+      pyForm.append("report_type", fileType);
+      const blob = new Blob([buffer], { type: "application/octet-stream" });
+      pyForm.append("file", blob, fileName);
+
+      const pyRes = await fetch(`${PYTHON_BACKEND_URL}/api/upload-report`, {
+        method: "POST",
+        body: pyForm,
+      });
+      if (!pyRes.ok) {
+        const errData = await pyRes.json().catch(() => ({}));
+        console.warn(`[IMPORT:${fileType}] Python backend /api/upload-report warning:`, errData.detail || pyRes.status);
+      }
+    } catch (pyErr) {
+      console.warn(`[IMPORT:${fileType}] Could not forward report to Python backend:`, pyErr.message);
     }
 
     const reportRes = await processWordReport({ buffer, reportType: fileType, fileName });
