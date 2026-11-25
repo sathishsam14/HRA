@@ -40,3 +40,4 @@ archive/
 
 # System files
 .DS_Store
+venv312/
