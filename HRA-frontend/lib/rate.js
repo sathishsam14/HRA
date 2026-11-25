@@ -1,6 +1,6 @@
 // lib/rate.js
 // HRA Rating Integration (Bangalore Turf Club)
-// Delegates race rating to the dedicated Python Machine Learning backend (FastAPI / Scikit-Learn)
+// Delegates whole-meeting rating in one call to the Python Machine Learning backend (/api/predict-meeting)
 // and persists Rating records into PostgreSQL for the Next.js frontend.
 
 import { db } from "./db.js";
@@ -37,15 +37,16 @@ export function applyOverride(result, { finalChange, reason, userId, at = new Da
 }
 
 /**
- * Executes rating logic by delegating to Python backend and persists Rating records for a single race.
- * Skips races whose status is REVIEWED.
+ * Rates the entire open meeting (all open races across all dates) in ONE call
+ * to /api/predict-meeting, matching the client script's full-meeting feature engineering.
  *
- * @param {number} raceId
- * @param {object} [tx] Optional Prisma transaction
+ * @param {object} [tx] Optional Prisma client or transaction
  */
-async function runRating(tx, raceId) {
-  const race = await tx.race.findUnique({
-    where: { id: raceId },
+export async function rateMeeting(tx = null) {
+  const client = tx || db;
+
+  const openRaces = await client.race.findMany({
+    where: { status: { not: "REVIEWED" } },
     include: {
       entries: {
         include: {
@@ -58,166 +59,133 @@ async function runRating(tx, raceId) {
         ],
       },
     },
+    orderBy: [
+      { raceDate: "asc" },
+      { raceNo: "asc" },
+      { id: "asc" },
+    ],
   });
 
-  if (!race) {
-    return { ok: false, reason: `Race with id ${raceId} not found` };
+  if (openRaces.length === 0) {
+    return { ok: true, racesRated: 0, entriesRated: 0, results: [] };
   }
 
-  // Skip reviewed races: once reviewed by handicapper, automatic re-rating is locked
-  if (race.status === "REVIEWED") {
-    return { ok: false, skipped: true, reason: `Race ${raceId} is REVIEWED and locked from automatic rating` };
-  }
+  const meetingEntries = [];
+  const entryMap = new Map();
 
-  // Helper to split remarks by pipe delimiter
-  const splitRemark = (s) => (s ? String(s).split(/\s*\|\s*/).map((x) => x.trim()).filter(Boolean) : []);
+  for (const race of openRaces) {
+    const detectedType = raceType(race.category);
+    if (detectedType && race.raceType !== detectedType) {
+      await client.race.update({
+        where: { id: race.id },
+        data: { raceType: detectedType },
+      });
+    }
 
-  // Prepare entrant data for Python backend
-  const engineEntries = [];
-  for (const entry of race.entries) {
-    const raceExtra = findRaceExtraEntry({
-      raceDate: race.raceDate,
-      raceNo: race.raceNo,
-      horseName: entry.horse.name,
-    });
+    const raceDateStr = race.raceDate.toISOString().slice(0, 10);
 
-    const raceCurrat = raceExtra?.currat != null ? Number(raceExtra.currat) : null;
-    const masterRating = entry.horse.currentRating != null ? Number(entry.horse.currentRating) : null;
-    const currentRating = raceCurrat ?? masterRating ?? null;
+    for (const entry of race.entries) {
+      const raceExtra = findRaceExtraEntry({
+        raceDate: race.raceDate,
+        raceNo: race.raceNo,
+        horseName: entry.horse.name,
+      });
 
-    engineEntries.push({
-      entry_id: entry.id,
-      horse_name: entry.horse.name,
-      current_rating: currentRating,
-      placing: entry.placing ?? null,
-      timing: raceExtra?.timing || entry.timing || null,
-      verdict: entry.verdict ?? null,
-      weight_carried: raceExtra?.weightcd != null ? Number(raceExtra.weightcd) : (entry.weightCarried ?? null),
-      horse_weight: entry.horseWeight ?? null,
-      shoes: entry.shoes || "A",
-      gate: entry.startGate ?? null,
-      jockey: entry.jockey ?? "Unknown",
-      trainer: entry.trainer || entry.horse.trainer || "Unknown",
-      starter_remark: splitRemark(entry.starterRemark).join(" | "),
-      vet_remark: splitRemark(entry.veterinaryRemark).join(" | "),
-      incident_remark: splitRemark(entry.incidentRemark).join(" | "),
-    });
-  }
+      const raceCurrat = raceExtra?.currat != null ? Number(raceExtra.currat) : null;
+      const masterRating = entry.horse.currentRating != null ? Number(entry.horse.currentRating) : null;
+      const currentRating = raceCurrat ?? masterRating ?? null;
 
-  // Update raceType on Race if currently null
-  const detectedType = raceType(race.category);
-  if (detectedType && race.raceType !== detectedType) {
-    await tx.race.update({
-      where: { id: race.id },
-      data: { raceType: detectedType },
-    });
-  }
+      entryMap.set(entry.id, { entry, currentRating });
 
-  // Call Python Backend API
-  let results = [];
-  try {
-    const response = await fetch(`${PYTHON_BACKEND_URL}/api/predict-race`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        venue: race.venue,
-        race_date: race.raceDate.toISOString().slice(0, 10),
+      meetingEntries.push({
+        entry_id: entry.id,
+        race_id: race.id,
+        racedate: raceDateStr,
         season: race.season || "2026-27",
         category: race.category,
-        race_no: race.raceNo,
+        raceno: race.raceNo,
         distance: race.distance,
-        entries: engineEntries,
-      }),
+        currat: currentRating,
+        horse_name: entry.horse.name,
+        horse_weight: entry.horseWeight ?? null,
+        shoes: entry.shoes || "A",
+        gate: entry.startGate ?? null,
+        jockey: entry.jockey ?? "Unknown",
+        placing: entry.placing ?? null,
+        timing: raceExtra?.timing || entry.timing || null,
+        verdict: entry.verdict ?? null,
+        trainer: entry.trainer || entry.horse.trainer || "Unknown",
+        penetrometer: entry.penetrometer ?? null,
+        railing: entry.railing ?? null,
+      });
+    }
+  }
+
+  let ratings = [];
+  try {
+    const response = await fetch(`${PYTHON_BACKEND_URL}/api/predict-meeting`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ entries: meetingEntries }),
     });
 
     if (response.ok) {
       const data = await response.json();
       if (data.success && Array.isArray(data.ratings)) {
-        results = data.ratings.map((r) => ({
-          status: r.status || "RATED",
-          recommendedChange: r.recommended_change,
-          recommendedRating: r.recommended_rating,
-          reasons: [r.justification],
-        }));
+        ratings = data.ratings;
       }
     } else {
-      console.warn(`[RATE] Python backend returned error status: ${response.status}`);
+      console.warn(`[RATE] Python backend /api/predict-meeting returned status: ${response.status}`);
     }
   } catch (backendErr) {
     console.error(`[RATE] Could not reach Python backend at ${PYTHON_BACKEND_URL}:`, backendErr.message);
   }
 
-  // Fallback if backend returned no results (safe defaults)
-  if (results.length === 0) {
-    for (const e of engineEntries) {
-      results.push({
+  if (ratings.length === 0) {
+    for (const e of meetingEntries) {
+      ratings.push({
+        entry_id: e.entry_id,
         status: e.placing != null ? "RATED" : "UNCHANGED",
-        recommendedChange: 0,
-        recommendedRating: e.current_rating,
-        reasons: ["Pending Python backend calculation"],
+        recommended_change: 0,
+        recommended_rating: e.currat,
+        justification: "Pending Python backend calculation",
       });
     }
   }
 
-  // Upsert ratings into database for UI reflection
-  for (let i = 0; i < race.entries.length; i++) {
-    const entry = race.entries[i];
-    const res = results[i];
-    if (!res) continue;
+  for (const r of ratings) {
+    if (r.entry_id == null) continue;
+    const status = r.status || "RATED";
+    const recommendedChange = r.recommended_change ?? 0;
+    const recommendedRating = r.recommended_rating ?? null;
+    const reasons = [r.justification || ""];
 
-    await tx.rating.upsert({
-      where: { entryId: entry.id },
+    await client.rating.upsert({
+      where: { entryId: r.entry_id },
       update: {
-        status: res.status,
-        recommendedChange: res.recommendedChange,
-        recommendedRating: res.recommendedRating,
-        reasons: res.reasons,
+        status,
+        recommendedChange,
+        recommendedRating,
+        reasons,
       },
       create: {
-        entryId: entry.id,
-        status: res.status,
-        recommendedChange: res.recommendedChange,
-        recommendedRating: res.recommendedRating,
-        reasons: res.reasons,
+        entryId: r.entry_id,
+        status,
+        recommendedChange,
+        recommendedRating,
+        reasons,
       },
     });
   }
 
   return {
     ok: true,
-    raceId: race.id,
-    raceRef: `${race.venue} Race ${race.raceNo}`,
-    entriesRated: results.length,
-    results,
+    racesRated: openRaces.length,
+    entriesRated: ratings.length,
+    results: ratings,
   };
 }
 
-/**
- * Public function to rate and persist a race.
- */
-export async function rateAndSaveRace(raceId, tx = null) {
-  const client = tx || db;
-  return runRating(client, raceId);
-}
-
-/**
- * Re-rates all open (non-REVIEWED) races.
- * Typically called after a COEFFICIENT upload.
- */
-export async function reRateAllOpenRaces() {
-  const openRaces = await db.race.findMany({
-    where: { status: { not: "REVIEWED" } },
-    select: { id: true },
-  });
-
-  const results = [];
-  for (const r of openRaces) {
-    try {
-      const res = await rateAndSaveRace(r.id);
-      results.push(res);
-    } catch (err) {
-      results.push({ ok: false, raceId: r.id, error: err.message });
-    }
-  }
-  return results;
+export async function reRateAllOpenRaces(tx = null) {
+  return rateMeeting(tx);
 }

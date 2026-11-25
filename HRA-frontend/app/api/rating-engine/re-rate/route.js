@@ -1,40 +1,27 @@
 // app/api/rating-engine/re-rate/route.js
-// Triggers automatic rating calculation and validation against latest coefficients.
+// Triggers whole-meeting rating calculation via Python ML backend (/api/predict-meeting).
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 import { NextResponse } from "next/server";
 import { getSession, requireRole } from "@/lib/auth";
-import { rateAndSaveRace, reRateAllOpenRaces } from "@/lib/rate";
+import { rateMeeting } from "@/lib/rate";
+import { invalidateServerCache } from "@/lib/serverCache.js";
 
 export async function POST(request) {
   try {
     const session = await getSession(request);
     await requireRole(["ADMIN", "HANDICAPPER"], session);
 
-    const body = await request.json().catch(() => ({}));
-    const { raceId } = body;
+    const result = await rateMeeting();
+    invalidateServerCache();
 
-    if (raceId && raceId !== "ALL") {
-      const parsedId = parseInt(raceId, 10);
-      const result = await rateAndSaveRace(parsedId);
-      if (!result.ok && !result.skipped) {
-        return NextResponse.json({ error: result.reason || "Failed to auto-rate race" }, { status: 400 });
-      }
-      return NextResponse.json({
-        success: true,
-        message: `Race ${result.raceRef || raceId} auto-rated & validated successfully!`,
-        result,
-      });
-    }
-
-    // Otherwise re-rate all open races
-    const results = await reRateAllOpenRaces();
     return NextResponse.json({
       success: true,
-      message: `All ${results.length} open races auto-rated & validated against approved coefficients!`,
-      count: results.length,
+      message: `Whole meeting (${result.racesRated} open races, ${result.entriesRated} horses) rated via Python ML Engine!`,
+      count: result.racesRated,
+      entriesRated: result.entriesRated,
     });
   } catch (error) {
     console.error("Re-rate error:", error);

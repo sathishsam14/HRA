@@ -272,6 +272,9 @@ export async function GET(request) {
       let masterDataReady = false;
       let masterEntries = 0;
       let trainingDateInfo = "";
+      let modelSha256 = "";
+      let reportEventsLoaded = 0;
+      let useConfirmedRaces = true;
       try {
         const PYTHON_BACKEND_URL = process.env.PYTHON_BACKEND_URL || "http://127.0.0.1:8000";
         const infoRes = await fetch(`${PYTHON_BACKEND_URL}/api/model-info`, { cache: "no-store" });
@@ -279,6 +282,9 @@ export async function GET(request) {
           const info = await infoRes.json();
           masterDataReady = Boolean(info.master_data_loaded);
           masterEntries = info.master_entries || 0;
+          modelSha256 = info.model_sha256 || "";
+          reportEventsLoaded = info.report_events_loaded ?? 0;
+          useConfirmedRaces = info.use_confirmed_races !== undefined ? Boolean(info.use_confirmed_races) : true;
           const ti = info.training_info || {};
           if (ti.min_date && ti.max_date && ti.min_date !== "N/A") {
             trainingDateInfo = ` · ${ti.min_date} to ${ti.max_date}`;
@@ -288,10 +294,14 @@ export async function GET(request) {
         // Backend status fallback
       }
 
+      const shortHash = modelSha256 ? modelSha256.slice(0, 8) : "unknown";
       const patternInfo = {
         loaded: masterDataReady,
+        modelSha256,
+        reportEventsLoaded,
+        useConfirmedRaces,
         summaryText: masterDataReady
-          ? `Python ML Service: ${masterEntries.toLocaleString()} training rows${trainingDateInfo}`
+          ? `Python ML Service: ${masterEntries.toLocaleString()} training rows${trainingDateInfo} · btc_rating_model.py ${shortHash} · Reports: ${reportEventsLoaded} events · USE_CONFIRMED_RACES=${useConfirmedRaces}`
           : "Python ML Service: Master data not loaded",
       };
 
