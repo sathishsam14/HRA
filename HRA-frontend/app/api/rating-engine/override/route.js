@@ -12,7 +12,7 @@ import { invalidateServerCache } from "@/lib/serverCache.js";
 export async function POST(request) {
   try {
     const session = await getSession(request);
-    await requireRole(["ADMIN", "HANDICAPPER"], session);
+    await requireRole(["HANDICAPPER"], session);
 
     const body = await request.json().catch(() => ({}));
     const { entryId, finalChange, reason } = body;

@@ -1,5 +1,6 @@
 // app/api/mis/route.js
 // Server-paginated API for the 27 statutory MIS columns with Venue, Date, Season, Type, Category filters.
+// Combines confirmed current-season races (REVIEWED) with all master Excel (BSM.xlsx) records.
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -8,6 +9,8 @@ import { NextResponse } from "next/server";
 import db from "@/lib/db";
 import { getSession } from "@/lib/auth";
 import { getCachedData } from "@/lib/serverCache.js";
+
+const PYTHON_BACKEND_URL = process.env.PYTHON_BACKEND_URL || "http://127.0.0.1:8000";
 
 export async function GET(request) {
   try {
@@ -29,110 +32,31 @@ export async function GET(request) {
 
       const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10));
       const pageSize = Math.min(100, Math.max(1, parseInt(searchParams.get("pageSize") || "25", 10)));
-      const skip = (page - 1) * pageSize;
 
-      // 1. Fetch distinct filter options only for races with confirmed handicapper decisions
-      const allRaces = await db.race.findMany({
+      // 1. Fetch confirmed REVIEWED entries from PostgreSQL
+      const dbEntries = await db.raceEntry.findMany({
         where: {
-          status: "REVIEWED",
-          entries: { some: { decision: { isNot: null } } },
+          race: { status: "REVIEWED" },
+          decision: { isNot: null },
         },
-        select: {
-          venue: true,
-          raceDate: true,
-          season: true,
-          raceType: true,
-          category: true,
+        include: {
+          race: true,
+          horse: true,
+          rating: true,
+          decision: true,
         },
+        orderBy: [
+          { race: { raceDate: "desc" } },
+          { race: { raceNo: "asc" } },
+          { placing: "asc" },
+        ],
       });
 
-      const venues = Array.from(new Set(allRaces.map((r) => r.venue))).filter(Boolean);
-      const dates = Array.from(
-        new Set(allRaces.map((r) => r.raceDate.toISOString().slice(0, 10)))
-      ).filter(Boolean).sort();
-      const seasons = Array.from(new Set(allRaces.map((r) => r.season))).filter(Boolean);
-      const types = Array.from(new Set(allRaces.map((r) => (r.raceType === "TERMS" ? "Terms" : "Handicap")))).filter(Boolean);
-      const categories = Array.from(
-        new Set(
-          allRaces
-            .filter((r) => !raceType || raceType === "ALL" || String(r.raceType).toUpperCase() === raceType.toUpperCase())
-            .map((r) => r.category)
-        )
-      ).filter(Boolean);
-      const categoriesByType = {
-        Handicap: Array.from(
-          new Set(
-            allRaces
-              .filter((r) => String(r.raceType).toUpperCase() === "HANDICAP")
-              .map((r) => r.category)
-          )
-        ).filter(Boolean),
-        Terms: Array.from(
-          new Set(
-            allRaces
-              .filter((r) => String(r.raceType).toUpperCase() === "TERMS")
-              .map((r) => r.category)
-          )
-        ).filter(Boolean),
-      };
-
-      // 2. Build race filter where clause: ONLY confirmed REVIEWED races with decisions
-      const raceWhere = {
-        status: "REVIEWED",
-      };
-      if (venue && venue !== "ALL") raceWhere.venue = venue;
-      if (raceDate && raceDate !== "ALL") {
-        const d = new Date(raceDate);
-        if (!isNaN(d.getTime())) raceWhere.raceDate = d;
-      }
-      if (season && season !== "ALL") raceWhere.season = season;
-      if (raceType && raceType !== "ALL") {
-        const upperType = raceType.toUpperCase();
-        if (upperType === "HANDICAP" || upperType === "TERMS") {
-          raceWhere.raceType = upperType;
-        }
-      }
-      if (category && category !== "ALL") raceWhere.category = category;
-
-      // Only entries confirmed by the Handicapper appear in the MIS report
-      const entryWhere = {
-        race: raceWhere,
-        decision: { isNot: null },
-      };
-      if (horseName && horseName.trim() !== "") {
-        entryWhere.horse = {
-          name: { contains: horseName.trim(), mode: "insensitive" },
-        };
-      }
-
-      // 3. Count total matching rows & query paginated records
-      const [totalCount, entries] = await Promise.all([
-        db.raceEntry.count({ where: entryWhere }),
-        db.raceEntry.findMany({
-          where: entryWhere,
-          skip,
-          take: pageSize,
-          include: {
-            race: true,
-            horse: true,
-            rating: true,
-            decision: true,
-          },
-          orderBy: [
-            { race: { raceDate: "desc" } },
-            { race: { raceNo: "asc" } },
-            { placing: "asc" },
-          ],
-        }),
-      ]);
-
-      // 4. Map the 27 statutory columns (blank optional values display as "—")
-      const rows = entries.map((e) => {
+      const dbRows = dbEntries.map((e) => {
         const r = e.race;
         const h = e.horse;
         const rating = e.rating;
         const decision = e.decision;
-
         const finalChange = decision ? decision.finalChange : null;
         const finalRating = decision ? decision.finalRating : (h.currentRating ?? null);
         const isConfirmed = decision !== null && decision !== undefined;
@@ -179,6 +103,69 @@ export async function GET(request) {
         };
       });
 
+      // 2. Fetch all master Excel (BSM.xlsx) records from Python backend
+      let masterRows = [];
+      try {
+        const mRes = await fetch(`${PYTHON_BACKEND_URL}/api/master-records`, { cache: "no-store" });
+        if (mRes.ok) {
+          const mData = await mRes.json();
+          if (mData.success && Array.isArray(mData.rows)) {
+            masterRows = mData.rows;
+          }
+        }
+      } catch (err) {
+        console.warn("Could not fetch master BSM records for MIS:", err.message);
+      }
+
+      const combinedRows = [...dbRows, ...masterRows];
+
+      // 3. Build filter options across all MIS records (DB confirmed + BSM master)
+      const venues = Array.from(new Set(combinedRows.map((r) => r.venue))).filter((v) => v && v !== "—");
+      const dates = Array.from(new Set(combinedRows.map((r) => r.raceDate))).filter((d) => d && d !== "—").sort().reverse();
+      const seasons = Array.from(new Set(combinedRows.map((r) => r.raceSeason))).filter((s) => s && s !== "—");
+      const types = Array.from(
+        new Set(combinedRows.map((r) => (String(r.raceType).toUpperCase() === "TERMS" ? "Terms" : "Handicap")))
+      ).filter(Boolean);
+      const categories = Array.from(
+        new Set(
+          combinedRows
+            .filter((r) => !raceType || raceType === "ALL" || String(r.raceType).toUpperCase() === raceType.toUpperCase())
+            .map((r) => r.raceCategory)
+        )
+      ).filter((c) => c && c !== "—");
+      const categoriesByType = {
+        Handicap: Array.from(
+          new Set(
+            combinedRows
+              .filter((r) => String(r.raceType).toUpperCase() === "HANDICAP")
+              .map((r) => r.raceCategory)
+          )
+        ).filter((c) => c && c !== "—"),
+        Terms: Array.from(
+          new Set(
+            combinedRows
+              .filter((r) => String(r.raceType).toUpperCase() === "TERMS")
+              .map((r) => r.raceCategory)
+          )
+        ).filter((c) => c && c !== "—"),
+      };
+
+      // 4. Filter combined rows
+      const searchHorse = horseName ? horseName.trim().toLowerCase() : "";
+      const filtered = combinedRows.filter((r) => {
+        if (venue && venue !== "ALL" && r.venue !== venue) return false;
+        if (raceDate && raceDate !== "ALL" && r.raceDate !== raceDate) return false;
+        if (season && season !== "ALL" && r.raceSeason !== season) return false;
+        if (raceType && raceType !== "ALL" && String(r.raceType).toUpperCase() !== raceType.toUpperCase()) return false;
+        if (category && category !== "ALL" && r.raceCategory !== category) return false;
+        if (searchHorse && !String(r.horseName).toLowerCase().includes(searchHorse)) return false;
+        return true;
+      });
+
+      const totalCount = filtered.length;
+      const start = (page - 1) * pageSize;
+      const pagedRows = filtered.slice(start, start + pageSize);
+
       return {
         filters: {
           venues,
@@ -188,7 +175,7 @@ export async function GET(request) {
           categories,
           categoriesByType,
         },
-        rows,
+        rows: pagedRows,
         pagination: {
           page,
           pageSize,

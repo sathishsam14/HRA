@@ -36,16 +36,6 @@ export async function POST(request) {
 
     // 1. User does not exist
     if (!user || !user.active) {
-      await db.auditLog.create({
-        data: {
-          action: "LOGIN_FAILED",
-          userId: null,
-          entity: "User",
-          entityId: rawEmail,
-          reason: "Invalid email or password (user not found or inactive)",
-        },
-      });
-
       return NextResponse.json(
         { error: "Invalid email or password" },
         { status: 401 }
@@ -56,16 +46,6 @@ export async function POST(request) {
     const now = new Date();
     if (user.lockedUntil && user.lockedUntil > now) {
       const minutesRemaining = Math.ceil((user.lockedUntil.getTime() - now.getTime()) / (60 * 1000));
-
-      await db.auditLog.create({
-        data: {
-          action: "LOGIN_BLOCKED_LOCKED",
-          userId: user.id,
-          entity: "User",
-          entityId: String(user.id),
-          reason: `Login rejected: Account is locked until ${user.lockedUntil.toISOString()}`,
-        },
-      });
 
       return NextResponse.json(
         {
@@ -81,12 +61,10 @@ export async function POST(request) {
     if (!isPasswordValid) {
       const newFailedLogins = (user.failedLogins || 0) + 1;
       let newLockedUntil = null;
-      let auditReason = "Invalid email or password";
 
       // Lock account for 15 minutes after 5 failed attempts
       if (newFailedLogins >= 5) {
         newLockedUntil = new Date(Date.now() + 15 * 60 * 1000);
-        auditReason = "Account locked for 15 minutes after 5 failed login attempts";
       }
 
       await db.user.update({
@@ -94,20 +72,6 @@ export async function POST(request) {
         data: {
           failedLogins: newFailedLogins,
           lockedUntil: newLockedUntil,
-        },
-      });
-
-      await db.auditLog.create({
-        data: {
-          action: "LOGIN_FAILED",
-          userId: user.id,
-          entity: "User",
-          entityId: String(user.id),
-          reason: auditReason,
-          after: {
-            failedLogins: newFailedLogins,
-            lockedUntil: newLockedUntil ? newLockedUntil.toISOString() : null,
-          },
         },
       });
 
@@ -145,18 +109,7 @@ export async function POST(request) {
     };
     const sessionToken = await createSessionToken(sessionPayload);
 
-    // 6. Record successful login into AuditLog
-    await db.auditLog.create({
-      data: {
-        action: "LOGIN_SUCCESS",
-        userId: user.id,
-        entity: "User",
-        entityId: String(user.id),
-        reason: "User logged in successfully",
-      },
-    });
-
-    // 7. Set signed httpOnly cookie and return user info
+    // 6. Set signed httpOnly cookie and return user info
     const response = NextResponse.json({
       ok: true,
       user: sessionPayload,

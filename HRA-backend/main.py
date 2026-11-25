@@ -67,6 +67,7 @@ REPORT_TYPE_MAP = {
 _cached_bsm = None
 _cached_model = None
 _cached_ev = None
+_cached_raw_bsm_rows = None
 _training_info = {}
 
 
@@ -366,13 +367,14 @@ def sync_master_from_ftp_if_configured():
 
 
 def get_base_data_and_model(force_reload: bool = False):
-    global _cached_bsm, _cached_model, _cached_ev, _training_info
+    global _cached_bsm, _cached_model, _cached_ev, _cached_raw_bsm_rows, _training_info
     if _cached_bsm is None or force_reload:
         sync_master_from_ftp_if_configured()
     if (_cached_bsm is None or force_reload) and os.path.exists(DEFAULT_BSM_PATH):
         print(f"📂 [BACKEND] Loading baseline historical BSM dataset from {DEFAULT_BSM_PATH}...")
         validate_bsm_file(DEFAULT_BSM_PATH)
         raw_bsm = load_bsm(DEFAULT_BSM_PATH)
+        _cached_raw_bsm_rows = None  # reset raw MIS cache so it reloads cleanly from DEFAULT_BSM_PATH
         use_confirmed = is_use_confirmed_races_enabled()
         confirmed_df = load_confirmed_races_as_df() if use_confirmed else pd.DataFrame()
 
@@ -562,6 +564,106 @@ def sync_confirmed_race(payload: Dict[str, Any]):
         "message": f"Confirmed decisions for {venue} Race #{r_no} saved.",
         "total_confirmed_races": len(all_confirmed),
         "use_confirmed_races": is_use_confirmed_races_enabled(),
+    }
+
+
+def _build_raw_bsm_mis_rows() -> List[Dict[str, Any]]:
+    """Reads all 22 columns of DEFAULT_BSM_PATH and caches formatted MIS rows in memory."""
+    global _cached_raw_bsm_rows
+    if _cached_raw_bsm_rows is not None:
+        return _cached_raw_bsm_rows
+    if not os.path.exists(DEFAULT_BSM_PATH):
+        return []
+
+    df = pd.read_excel(DEFAULT_BSM_PATH)
+    if df.empty:
+        _cached_raw_bsm_rows = []
+        return _cached_raw_bsm_rows
+
+    def s(val, default="—"):
+        if val is None or (isinstance(val, float) and np.isnan(val)):
+            return default
+        txt = str(val).strip()
+        return txt if txt else default
+
+    rows = []
+    for idx, row in df.iterrows():
+        raw_date = row.get("Race Date")
+        dt = pd.to_datetime(raw_date, format="%d/%m/%Y", errors="coerce")
+        if pd.isna(dt):
+            dt = pd.to_datetime(raw_date, errors="coerce")
+        iso_date = dt.strftime("%Y-%m-%d") if pd.notna(dt) else "—"
+        fmt_date = dt.strftime("%d %b %Y") if pd.notna(dt) else s(raw_date)
+
+        cat = s(row.get("Race Category"))
+        is_terms = bool(re.search(r"TERMS|MAIDEN|CLASSIC|SWEEPSTAKES|DERBY|OAKS|GUINEAS|CUP|TROPHY|MILLION|PLATE|STAKES|2YO|3YO|4YO|3Y&O|4Y&O", cat, re.I))
+        r_type = "TERMS" if is_terms else "HANDICAP"
+
+        cur_rat = row.get("Current Rating")
+        cur_rat_val = None if pd.isna(cur_rat) else int(float(cur_rat))
+        chg_raw = row.get("Change Rating")
+        chg_val = None if (pd.isna(chg_raw) or float(chg_raw) < -100) else int(float(chg_raw))
+        final_rat_val = (cur_rat_val + chg_val) if (cur_rat_val is not None and chg_val is not None) else cur_rat_val
+
+        dist_raw = row.get("Distance")
+        hw_raw = row.get("Horse Weight")
+        wd_raw = row.get("Weight Declare")
+        wc_raw = row.get("Weight Carried")
+        sg_raw = row.get("Start Gate")
+        pl_raw = row.get("Placing")
+        card_raw = row.get("Card No")
+        pent_raw = row.get("Penetrometer  Reading", row.get("Penetrometer Reading"))
+
+        rows.append({
+            "id": f"bsm_{idx}",
+            "isMaster": True,
+            "venue": s(row.get("Venue")),
+            "raceDate": iso_date,
+            "raceDateFormatted": fmt_date,
+            "raceSeason": s(row.get("Race Season")),
+            "raceType": r_type,
+            "raceCategory": cat,
+            "raceNo": int(float(row.get("Race No"))) if pd.notna(row.get("Race No")) else "—",
+            "cardNo": int(float(card_raw)) if pd.notna(card_raw) else "—",
+            "distance": f"{int(float(dist_raw))} m" if pd.notna(dist_raw) else "—",
+            "currentRating": cur_rat_val if cur_rat_val is not None else "—",
+            "horseName": s(row.get("Horse Name")),
+            "horseWeight": f"{float(hw_raw)} kg" if pd.notna(hw_raw) else "—",
+            "shoes": s(row.get("Shoes")),
+            "startGate": int(float(sg_raw)) if pd.notna(sg_raw) else "—",
+            "weightDeclare": f"{float(wd_raw)} kg" if pd.notna(wd_raw) else "—",
+            "jockey": s(row.get("Jockey")),
+            "weightCarried": f"{float(wc_raw)} kg" if pd.notna(wc_raw) else "—",
+            "placing": int(float(pl_raw)) if pd.notna(pl_raw) else "—",
+            "timing": s(row.get("Timing")),
+            "verdict": s(row.get("Verdict")),
+            "trainer": s(row.get("Trainer")),
+            "penetrometer": float(pent_raw) if pd.notna(pent_raw) else "—",
+            "railing": s(row.get("Railing Position")),
+            "starterReport": "—",
+            "veterinaryReport": "—",
+            "incidentReport": "—",
+            "status": "RATED",
+            "override": "No",
+            "finalChange": ("+" + str(chg_val) if chg_val > 0 else str(chg_val)) if chg_val is not None else "—",
+            "reasonExplanation": "Master BSM Historical Record",
+            "finalRating": final_rat_val if final_rat_val is not None else "—",
+            "recommendedRating": final_rat_val if final_rat_val is not None else "—",
+            "overridden": False,
+        })
+
+    _cached_raw_bsm_rows = rows
+    return _cached_raw_bsm_rows
+
+
+@app.get("/api/master-records")
+def get_master_records():
+    """Returns all BSM.xlsx master records mapped to the MIS columns."""
+    rows = _build_raw_bsm_mis_rows()
+    return {
+        "success": True,
+        "totalCount": len(rows),
+        "rows": rows,
     }
 
 

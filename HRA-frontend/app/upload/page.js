@@ -43,7 +43,7 @@ function formatISTDateTime(dateStr) {
 
 function UploadContent() {
   const { user } = useAuth();
-  const isHandicapperOrAdmin = user?.role === "ADMIN" || user?.role === "HANDICAPPER";
+  const isHandicapperOrAdmin = user?.role === "ADMIN" || user?.role === "HANDICAPPER" || user?.role === "MANAGER";
 
   const [recentFiles, setRecentFiles] = useState([]);
   const [loadingFiles, setLoadingFiles] = useState(false);
