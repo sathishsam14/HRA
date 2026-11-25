@@ -232,9 +232,13 @@ export async function GET(request) {
         const evData = await evRes.json();
         if (evData.success && Array.isArray(evData.evidence)) {
           for (const evRow of evData.evidence) {
+            const evDateObj = evRow.report_date ? new Date(evRow.report_date) : null;
+            const evDateFormatted = evDateObj && !isNaN(evDateObj.getTime())
+              ? evDateObj.toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit", year: "numeric" })
+              : evRow.report_date;
             evidenceSheet.addRow({
               horse: evRow.horse,
-              reportDate: evRow.report_date,
+              reportDate: evDateFormatted,
               source: evRow.source,
               flag: evRow.flag,
               remark: evRow.remark,

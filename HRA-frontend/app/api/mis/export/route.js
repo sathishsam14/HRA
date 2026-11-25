@@ -130,7 +130,7 @@ export async function GET(request) {
 
       sheet.addRow({
         venue: r.venue || "—",
-        raceDate: r.raceDate.toISOString().slice(0, 10),
+        raceDate: r.raceDate.toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit", year: "numeric" }),
         raceSeason: r.season || "—",
         raceType: r.raceType || "—",
         raceCategory: r.category || "—",
@@ -176,9 +176,13 @@ export async function GET(request) {
             if (raceType && raceType !== "ALL" && String(mr.raceType).toUpperCase() !== raceType.toUpperCase()) continue;
             if (category && category !== "ALL" && mr.raceCategory !== category) continue;
             if (searchHorse && !String(mr.horseName).toLowerCase().includes(searchHorse)) continue;
+            const mrDateObj = mr.raceDate && mr.raceDate !== "—" ? new Date(mr.raceDate) : null;
+            const mrDateFormatted = mrDateObj && !isNaN(mrDateObj.getTime())
+              ? mrDateObj.toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit", year: "numeric" })
+              : (mr.raceDateFormatted || mr.raceDate);
             sheet.addRow({
               venue: mr.venue,
-              raceDate: mr.raceDate,
+              raceDate: mrDateFormatted,
               raceSeason: mr.raceSeason,
               raceType: mr.raceType,
               raceCategory: mr.raceCategory,
