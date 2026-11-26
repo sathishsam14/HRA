@@ -7,7 +7,7 @@ export const revalidate = 0;
 import { NextResponse } from "next/server";
 import db from "@/lib/db";
 import { getSession } from "@/lib/auth";
-import { findRaceExtraEntry } from "@/lib/rating/raceExtras";
+import { loadRaceExtrasLookup } from "@/lib/rating/raceExtras";
 import { getCachedData } from "@/lib/serverCache.js";
 import { getPythonApiUrl } from "@/lib/pythonApi";
 
@@ -135,6 +135,7 @@ export async function GET(request) {
       });
 
       // 4. Format payload for UI
+      const getRaceExtra = await loadRaceExtrasLookup();
       const formattedRaces = races.map((race) => {
         const displayRaceType = race.raceType === "TERMS" ? "Terms" : "Handicap";
         const entries = race.entries.map((entry) => {
@@ -156,7 +157,7 @@ export async function GET(request) {
             reasonsExplanation = cleanReasons.join(" · ");
           }
 
-          const raceExtra = findRaceExtraEntry({
+          const raceExtra = getRaceExtra({
             raceDate: race.raceDate,
             raceNo: race.raceNo,
             horseName: horse.name,

@@ -1,18 +1,11 @@
 // lib/rating/raceExtras.js
-// Manages sidecar extras storage for current race files in data/race-extras/<uploadedFileId>.json
-// Used because RaceEntry schema does not have a dedicated current rating column.
-// Keyed by race date + race no + horse name.
+// Manages extras storage (currat, weightcd, timing, placing) for current race files
+// in PostgreSQL (AuditLog table, action = "RACE_EXTRAS") instead of local disk.
+// Keyed by race date + race no + horse name: "YYYY-MM-DD_raceNo_HORSE NAME".
 
-import fs from "node:fs";
-import path from "node:path";
+import db from "../db.js";
 
-const EXTRAS_DIR = path.resolve(process.cwd(), "data/race-extras");
-
-function ensureDir() {
-  if (!fs.existsSync(EXTRAS_DIR)) {
-    fs.mkdirSync(EXTRAS_DIR, { recursive: true });
-  }
-}
+const RACE_EXTRAS_ACTION = "RACE_EXTRAS";
 
 /**
  * Generates key for a race entry: "YYYY-MM-DD_raceNo_HORSE NAME"
@@ -22,7 +15,6 @@ export function getEntryKey(raceDate, raceNo, horseName) {
   if (d instanceof Date) {
     d = d.toISOString().slice(0, 10);
   } else if (typeof d === "string") {
-    // If dd/mm/yyyy
     if (d.includes("/")) {
       const parts = d.split("/");
       if (parts.length === 3) {
@@ -37,65 +29,100 @@ export function getEntryKey(raceDate, raceNo, horseName) {
 }
 
 /**
- * Saves race extras for an uploaded file
+ * Saves race extras for an uploaded file in AuditLog (action = "RACE_EXTRAS").
  * @param {string|number} fileId
  * @param {object} data Map of entryKey -> { currat, weightcd, timing, placing, ... }
+ * @param {object} [client] Optional Prisma client or transaction
  */
-export function saveRaceExtras(fileId, data) {
-  ensureDir();
-  const filePath = path.join(EXTRAS_DIR, `${fileId}.json`);
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf8");
+export async function saveRaceExtras(fileId, data, client = db) {
+  try {
+    await client.auditLog.create({
+      data: {
+        action: RACE_EXTRAS_ACTION,
+        entity: "UploadedFile",
+        entityId: String(fileId),
+        after: data,
+      },
+    });
+  } catch (err) {
+    if (client !== db) {
+      throw err;
+    }
+    console.warn("Could not save race extras to database:", err?.message || err);
+  }
 }
 
 /**
- * Loads race extras for a specific uploaded file ID
+ * Loads race extras for a specific uploaded file ID from AuditLog.
  * @param {string|number} fileId
- * @returns {object|null}
+ * @param {object} [client]
+ * @returns {Promise<object|null>}
  */
-export function loadRaceExtras(fileId) {
-  const filePath = path.join(EXTRAS_DIR, `${fileId}.json`);
-  if (!fs.existsSync(filePath)) return null;
+export async function loadRaceExtras(fileId, client = db) {
   try {
-    return JSON.parse(fs.readFileSync(filePath, "utf8"));
-  } catch {
+    const row = await client.auditLog.findFirst({
+      where: {
+        action: RACE_EXTRAS_ACTION,
+        entityId: String(fileId),
+      },
+      orderBy: { at: "desc" },
+      select: { after: true },
+    });
+    return row?.after && typeof row.after === "object" ? row.after : null;
+  } catch (err) {
+    console.warn("Could not load race extras from database:", err?.message || err);
     return null;
   }
 }
 
 /**
- * Finds the race extras entry matching a given race entry
- * Checks latest or matching JSON files in data/race-extras/
+ * Loads all saved race extras from AuditLog once per request and returns a fast lookup function.
+ * Newest uploads take precedence for any given entry key.
+ * @param {object} [client]
+ * @returns {Promise<(params: { raceDate: Date|string, raceNo: number, horseName: string }) => object|null>}
+ */
+export async function loadRaceExtrasLookup(client = db) {
+  const merged = new Map();
+  try {
+    const rows = await client.auditLog.findMany({
+      where: { action: RACE_EXTRAS_ACTION },
+      orderBy: { at: "desc" },
+      select: { after: true },
+    });
+
+    for (const row of rows) {
+      const content = row?.after;
+      if (!content || typeof content !== "object") continue;
+      const source =
+        content.entries && typeof content.entries === "object"
+          ? content.entries
+          : content;
+      for (const [k, v] of Object.entries(source)) {
+        if (!merged.has(k) && v !== undefined) {
+          merged.set(k, v);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn("Could not query race extras from database:", err?.message || err);
+  }
+
+  return function getRaceExtra({ raceDate, raceNo, horseName }) {
+    const key = getEntryKey(raceDate, raceNo, horseName);
+    return merged.get(key) ?? null;
+  };
+}
+
+/**
+ * Finds the race extras entry matching a given race entry from AuditLog.
  * @param {object} params
  * @param {Date|string} params.raceDate
  * @param {number} params.raceNo
  * @param {string} params.horseName
- * @returns {object|null} { currat, weightcd, timing, placing }
+ * @param {object} [client]
+ * @returns {Promise<object|null>} { currat, weightcd, timing, placing }
  */
-export function findRaceExtraEntry({ raceDate, raceNo, horseName }) {
-  ensureDir();
-  const key = getEntryKey(raceDate, raceNo, horseName);
-
-  const files = fs
-    .readdirSync(EXTRAS_DIR)
-    .filter((f) => f.endsWith(".json"))
-    .sort()
-    .reverse();
-
-  for (const f of files) {
-    try {
-      const content = JSON.parse(
-        fs.readFileSync(path.join(EXTRAS_DIR, f), "utf8")
-      );
-      if (content && content[key] !== undefined) {
-        return content[key];
-      }
-      if (content && content.entries && content.entries[key] !== undefined) {
-        return content.entries[key];
-      }
-    } catch {
-      // Continue searching next file
-    }
-  }
-
-  return null;
+export async function findRaceExtraEntry({ raceDate, raceNo, horseName }, client = db) {
+  const lookup = await loadRaceExtrasLookup(client);
+  return lookup({ raceDate, raceNo, horseName });
 }

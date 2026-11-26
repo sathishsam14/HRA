@@ -1,10 +1,6 @@
 // lib/reports/parseReports.js
-// Word Document (.docx) Report Parser for Bangalore Turf Club (BTC)
-// Parses STARTER, VETERINARY, INCIDENT, and STIPE reports using mammoth to HTML,
-// identifies meeting dates and race numbers, filters harmless clinical notes,
-// and links remarks to entrant horses in the corresponding race.
+// Report parser helpers for Bangalore Turf Club (BTC).
 
-import mammoth from "mammoth";
 import db from "../db.js";
 import { rateMeeting } from "../rate.js";
 import { readReportFile } from "./readReportFile.js";
