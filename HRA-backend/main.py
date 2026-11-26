@@ -14,6 +14,7 @@ import hashlib
 import shutil
 import struct
 import tempfile
+import threading
 import urllib.request
 import urllib.parse
 import http.cookiejar
@@ -72,6 +73,10 @@ _cached_model = None
 _cached_ev = None
 _cached_raw_bsm_rows = None
 _training_info = {}
+_reports_version = 0
+_trained_reports_version = -1
+_version_lock = threading.Lock()
+_model_lock = threading.Lock()
 
 
 def is_use_confirmed_races_enabled() -> bool:
@@ -425,57 +430,64 @@ def sync_master_from_url_if_needed():
 
 
 def get_base_data_and_model(force_reload: bool = False):
-    global _cached_bsm, _cached_model, _cached_ev, _cached_raw_bsm_rows, _training_info
-    if _cached_bsm is None or force_reload:
-        sync_master_from_ftp_if_configured()
-        sync_master_from_url_if_needed()
-    if (_cached_bsm is None or force_reload) and os.path.exists(DEFAULT_BSM_PATH):
-        print(f"📂 [BACKEND] Loading baseline historical BSM dataset from {DEFAULT_BSM_PATH}...")
-        validate_bsm_file(DEFAULT_BSM_PATH)
-        raw_bsm = load_bsm(DEFAULT_BSM_PATH)
-        _cached_raw_bsm_rows = None  # reset raw MIS cache so it reloads cleanly from DEFAULT_BSM_PATH
-        use_confirmed = is_use_confirmed_races_enabled()
-        confirmed_df = load_confirmed_races_as_df() if use_confirmed else pd.DataFrame()
+    global _cached_bsm, _cached_model, _cached_ev, _cached_raw_bsm_rows, _training_info, _trained_reports_version
+    with _model_lock:
+        with _version_lock:
+            target_version = _reports_version
+        needs_reload = _cached_bsm is None or (_trained_reports_version != target_version) or force_reload
+        if needs_reload:
+            sync_master_from_ftp_if_configured()
+            sync_master_from_url_if_needed()
+        if needs_reload and os.path.exists(DEFAULT_BSM_PATH):
+            print(f"📂 [BACKEND] Loading baseline historical BSM dataset from {DEFAULT_BSM_PATH}...")
+            validate_bsm_file(DEFAULT_BSM_PATH)
+            raw_bsm = load_bsm(DEFAULT_BSM_PATH)
+            _cached_raw_bsm_rows = None  # reset raw MIS cache so it reloads cleanly from DEFAULT_BSM_PATH
+            use_confirmed = is_use_confirmed_races_enabled()
+            confirmed_df = load_confirmed_races_as_df() if use_confirmed else pd.DataFrame()
 
-        if not confirmed_df.empty:
-            print(f"📈 [BACKEND] Augmenting training set with {len(confirmed_df)} confirmed handicapper runs...")
-            _cached_bsm = pd.concat([raw_bsm, confirmed_df], ignore_index=True)
-            _cached_bsm["horse"] = _cached_bsm["horse"].astype(str).str.strip()
-        else:
-            _cached_bsm = raw_bsm.copy()
-            _cached_bsm["horse"] = _cached_bsm["horse"].astype(str).str.strip()
+            if not confirmed_df.empty:
+                print(f"📈 [BACKEND] Augmenting training set with {len(confirmed_df)} confirmed handicapper runs...")
+                _cached_bsm = pd.concat([raw_bsm, confirmed_df], ignore_index=True)
+                _cached_bsm["horse"] = _cached_bsm["horse"].astype(str).str.strip()
+            else:
+                _cached_bsm = raw_bsm.copy()
+                _cached_bsm["horse"] = _cached_bsm["horse"].astype(str).str.strip()
 
-        names = set(_cached_bsm["horse"].dropna().astype(str).str.strip())
-        _cached_ev = load_all_report_events(names)
+            names = set(_cached_bsm["horse"].dropna().astype(str).str.strip())
+            _cached_ev = load_all_report_events(names)
 
-        print(
-            f"⚡ [BACKEND] Training hybrid RatingModel on {len(_cached_bsm)} runs "
-            f"with {len(_cached_ev)} report events (USE_CONFIRMED_RACES={use_confirmed})..."
-        )
-        feat = build_features(_cached_bsm, _cached_ev)
-        _cached_model = RatingModel(use_text=True).fit(feat[~feat["is_target"]])
+            print(
+                f"⚡ [BACKEND] Training hybrid RatingModel on {len(_cached_bsm)} runs "
+                f"with {len(_cached_ev)} report events (USE_CONFIRMED_RACES={use_confirmed})..."
+            )
+            feat = build_features(_cached_bsm, _cached_ev)
+            _cached_model = RatingModel(use_text=True).fit(feat[~feat["is_target"]])
 
-        valid_dates = _cached_bsm["d"].dropna()
-        min_date = str(valid_dates.min().date()) if not valid_dates.empty else "N/A"
-        max_date = str(valid_dates.max().date()) if not valid_dates.empty else "N/A"
+            valid_dates = _cached_bsm["d"].dropna()
+            min_date = str(valid_dates.min().date()) if not valid_dates.empty else "N/A"
+            max_date = str(valid_dates.max().date()) if not valid_dates.empty else "N/A"
 
-        _training_info = {
-            "master_entries": len(_cached_bsm),
-            "baseline_bsm_entries": len(raw_bsm),
-            "confirmed_entries_incorporated": len(confirmed_df),
-            "use_confirmed_races": use_confirmed,
-            "report_events_loaded": len(_cached_ev),
-            "model_sha256": get_model_file_sha256(),
-            "min_date": min_date,
-            "max_date": max_date,
-            "trained_at": datetime.now().isoformat(),
-        }
-        print(
-            f"✅ [BACKEND] Hybrid RatingModel ready! ({len(_cached_bsm)} entries, "
-            f"{len(_cached_ev)} report events, {min_date} to {max_date})"
-        )
+            _training_info = {
+                "master_entries": len(_cached_bsm),
+                "baseline_bsm_entries": len(raw_bsm),
+                "confirmed_entries_incorporated": len(confirmed_df),
+                "use_confirmed_races": use_confirmed,
+                "report_events_loaded": len(_cached_ev),
+                "model_sha256": get_model_file_sha256(),
+                "min_date": min_date,
+                "max_date": max_date,
+                "trained_at": datetime.now().isoformat(),
+            }
+            with _version_lock:
+                if _reports_version == target_version:
+                    _trained_reports_version = target_version
+            print(
+                f"✅ [BACKEND] Hybrid RatingModel ready! ({len(_cached_bsm)} entries, "
+                f"{len(_cached_ev)} report events, {min_date} to {max_date})"
+            )
 
-    return _cached_bsm, _cached_model
+        return _cached_bsm, _cached_model
 
 
 @app.on_event("startup")
@@ -570,13 +582,16 @@ async def upload_report(
 
         convert_report_to_docx(raw_path, dst_docx_path)
 
-        get_base_data_and_model(force_reload=True)
+        global _reports_version
+        with _version_lock:
+            _reports_version += 1
 
         return {
             "success": True,
             "report_type": src,
             "stored_file": os.path.basename(dst_docx_path),
             "report_events_loaded": _training_info.get("report_events_loaded", 0),
+            "retrain_pending": True,
             "training_info": _training_info,
         }
     except Exception as e:
