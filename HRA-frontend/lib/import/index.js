@@ -2,7 +2,7 @@
 // Multi-format high-performance ingestion engine for HRA (Horse Rating Automation).
 // Supported file types: ACTIVE_HORSE, MASTER, HISTORY, RACE, STARTER, VETERINARY, INCIDENT.
 // Validates file signatures, data types, mandatory fields, prevents duplicates by size + SHA-256 hash,
-// saves accepted files in uploads/, and applies all bulk updates in high-efficiency batch queries with AuditLog.
+// and applies all bulk updates in high-efficiency batch queries with AuditLog.
 
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -10,16 +10,37 @@ import path from "node:path";
 import os from "node:os";
 import ExcelJS from "exceljs";
 import unzipper from "unzipper";
-import mammoth from "mammoth";
 import db from "../db.js";
 import { raceType } from "../rate.js";
 import { rateMeeting, reRateAllOpenRaces } from "../rate.js";
 import { getPythonApiUrl } from "../pythonApi.js";
 import { normalizeHeader, HEADER_ALIASES, matchHeaderKey } from "./aliases.js";
-import { processWordReport } from "../reports/parseReports.js";
 import { saveRaceExtras, getEntryKey } from "../rating/raceExtras.js";
 
 export { normalizeHeader, HEADER_ALIASES, matchHeaderKey };
+
+async function upsertUploadedFile(client, { name, size, hash, fileType, status = "PROCESSED", uploadedBy = null }) {
+  return client.uploadedFile.upsert({
+    where: {
+      name_size_hash: { name, size, hash },
+    },
+    update: {
+      fileType,
+      status,
+      errorText: null,
+      uploadedBy: typeof uploadedBy === "number" ? uploadedBy : null,
+      uploadedAt: new Date(),
+    },
+    create: {
+      name,
+      size,
+      hash,
+      fileType,
+      status,
+      uploadedBy: typeof uploadedBy === "number" ? uploadedBy : null,
+    },
+  });
+}
 
 // ─── Value Sanitization & Parsing ─────────────────────────────────────────────
 
@@ -387,112 +408,6 @@ async function parseExcelRows(buffer) {
   };
 }
 
-// ─── Word & PDF Document Parsers ──────────────────────────────────────────────
-
-async function parseDocxReport(buffer) {
-  const { value: rawText } = await mammoth.extractRawText({ buffer });
-  const lines = rawText
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean);
-
-  const rows = [];
-  let rowNumber = 1;
-
-  for (const line of lines) {
-    const parts = line.split(/[,\t|]+/).map((s) => s.trim());
-    if (parts.length < 3) continue;
-
-    let raceDate = null;
-    let raceNo = null;
-    let horseName = null;
-    let remark = null;
-
-    for (const part of parts) {
-      if (!raceDate && parseRaceDate(part)) {
-        raceDate = part;
-      } else if (!raceNo && /^\d+$/.test(part)) {
-        raceNo = parseInt(part, 10);
-      } else if (!horseName && part.length > 1 && !/^\d+$/.test(part)) {
-        horseName = part;
-      } else if (!remark && part.length > 2) {
-        remark = part;
-      }
-    }
-
-    if (parts.length >= 4) {
-      remark = parts.slice(3).join(" ");
-    }
-
-    if (horseName && remark) {
-      rows.push({
-        rowNumber: rowNumber++,
-        data: {
-          raceDate,
-          raceNo,
-          horseName,
-          remark,
-        },
-        raw: { raceDate, raceNo, horseName, remark },
-      });
-    }
-  }
-
-  return { headers: ["raceDate", "raceNo", "horseName", "remark"], rows };
-}
-
-async function parsePdfReport(buffer) {
-  let text = "";
-  try {
-    const pdfParseMod = eval('require("pdf-parse")');
-    const PDFParser = pdfParseMod.PDFParse || pdfParseMod;
-    if (typeof PDFParser === "function") {
-      try {
-        const parser = new PDFParser({ autoDetect: true });
-        const data = await parser.parse(buffer);
-        text = data?.text || "";
-      } catch {
-        const data = await PDFParser(buffer);
-        text = data?.text || "";
-      }
-    }
-  } catch (err) {
-    console.warn("PDF parsing fallback:", err?.message);
-    text = buffer.toString("latin1").replace(/[^\x20-\x7E\n]/g, " ");
-  }
-
-  const lines = text
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean);
-
-  const rows = [];
-  let rowNumber = 1;
-
-  for (const line of lines) {
-    const match = line.match(/^(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})\s+(\d+)\s+([A-Za-z\s'.]+?)\s{2,}(.+)$/);
-    if (match) {
-      rows.push({
-        rowNumber: rowNumber++,
-        data: {
-          raceDate: match[1],
-          raceNo: parseInt(match[2], 10),
-          horseName: match[3].trim(),
-          remark: match[4].trim(),
-        },
-        raw: {
-          raceDate: match[1],
-          raceNo: match[2],
-          horseName: match[3],
-          remark: match[4],
-        },
-      });
-    }
-  }
-
-  return { headers: ["raceDate", "raceNo", "horseName", "remark"], rows };
-}
-
 // ─── Streaming Active Horse Report Parser ─────────────────────────────────────
 // Layout for every horse:
 // 1. Horse name row (horse name in first non-empty cell).
@@ -830,15 +745,13 @@ export async function importFile({ fileName, buffer, fileType, uploadedBy, sourc
       const pyData = await pyRes.json();
       const savedCount = pyData.master_entries || 0;
 
-      const createdUploadedFile = await db.uploadedFile.create({
-        data: {
-          name: fileName,
-          size,
-          hash,
-          fileType: "HISTORY",
-          status: "PROCESSED",
-          uploadedBy: typeof uploadedBy === "number" ? uploadedBy : null,
-        },
+      const createdUploadedFile = await upsertUploadedFile(db, {
+        name: fileName,
+        size,
+        hash,
+        fileType: "HISTORY",
+        status: "PROCESSED",
+        uploadedBy,
       });
 
       return {
@@ -880,7 +793,8 @@ export async function importFile({ fileName, buffer, fileType, uploadedBy, sourc
       };
     }
 
-    // Forward report to Python backend so it is stored cumulatively, converted to .docx, mined, and triggers retrain
+    // Forward raw report to Python backend /api/upload-report (which converts PDF, Word, Excel, CSV, and Text)
+    let pyData = {};
     try {
       const pyForm = new FormData();
       pyForm.append("report_type", fileType);
@@ -891,49 +805,51 @@ export async function importFile({ fileName, buffer, fileType, uploadedBy, sourc
         method: "POST",
         body: pyForm,
       });
+      pyData = await pyRes.json().catch(() => ({}));
       if (!pyRes.ok) {
-        const errData = await pyRes.json().catch(() => ({}));
-        console.warn(`[IMPORT:${fileType}] Python backend /api/upload-report warning:`, errData.detail || pyRes.status);
+        const errMsg = pyData.detail || pyData.message || `Python backend returned HTTP ${pyRes.status}`;
+        return {
+          success: false,
+          savedRows: 0,
+          rejectedRows: 0,
+          errors: [{ row: 0, column: "Report", reason: errMsg }],
+          unmatched: [],
+          message: `Failed to upload report to Python backend: ${errMsg}`,
+        };
       }
     } catch (pyErr) {
-      console.warn(`[IMPORT:${fileType}] Could not forward report to Python backend:`, pyErr.message);
+      return {
+        success: false,
+        savedRows: 0,
+        rejectedRows: 0,
+        errors: [{ row: 0, column: "Report", reason: pyErr.message }],
+        unmatched: [],
+        message: `Failed to forward report to Python backend: ${pyErr.message}`,
+      };
     }
 
-    const reportRes = await processWordReport({ buffer, reportType: fileType, fileName });
-
-    const createdUploadedFile = await db.uploadedFile.create({
-      data: {
-        name: fileName,
-        size,
-        hash,
-        fileType,
-        status: "PROCESSED",
-        uploadedBy: typeof uploadedBy === "number" ? uploadedBy : null,
-      },
+    const createdUploadedFile = await upsertUploadedFile(db, {
+      name: fileName,
+      size,
+      hash,
+      fileType,
+      status: "PROCESSED",
+      uploadedBy,
     });
 
-    const unmatchedRows = (reportRes.unmatched || []).map((u, idx) => ({
-      row: idx + 1,
-      raceDate: u.date,
-      raceNo: u.raceNo,
-      horseName: u.horse,
-      remark: u.finding || "",
-      reason: `Horse "${u.horse}" not found in Race #${u.raceNo} on ${u.date}.`,
-    }));
+    const eventsLoaded = Number(pyData.report_events_loaded ?? 0);
+    const storedFile = pyData.stored_file || fileName;
 
     return {
       success: true,
       fileId: createdUploadedFile.id,
-      savedRows: reportRes.linkedCount,
+      savedRows: eventsLoaded,
       rejectedRows: 0,
       errors: [],
-      unmatched: unmatchedRows,
-      message: reportRes.summary,
-      format: reportRes.format || "Word",
-      totalRemarks: (reportRes.linked?.length || 0) + (reportRes.unmatched?.length || 0),
-      linkedCount: reportRes.linkedCount,
-      horseCount: reportRes.horseCount,
-      unmatchedNames: reportRes.unmatchedNames || [],
+      unmatched: [],
+      message: `${fileType} report forwarded to Python backend (${storedFile}; ${eventsLoaded.toLocaleString()} report events loaded).`,
+      storedFile,
+      reportEventsLoaded: eventsLoaded,
     };
   }
 
@@ -942,16 +858,8 @@ export async function importFile({ fileName, buffer, fileType, uploadedBy, sourc
   try {
     if (lowerName.endsWith(".xlsx") || lowerName.endsWith(".xls")) {
       parsedResult = await parseExcelRows(buffer);
-    } else if (lowerName.endsWith(".docx")) {
-      if (!["STARTER", "VETERINARY", "INCIDENT", "STIPE"].includes(fileType)) {
-        throw new Error(`Word (.docx) files are only supported for STARTER, VETERINARY, INCIDENT, and STIPE reports.`);
-      }
-      parsedResult = await parseDocxReport(buffer);
-    } else if (lowerName.endsWith(".pdf")) {
-      if (!["STARTER", "VETERINARY", "INCIDENT", "STIPE"].includes(fileType)) {
-        throw new Error(`PDF (.pdf) files are only supported for STARTER, VETERINARY, INCIDENT, and STIPE reports.`);
-      }
-      parsedResult = await parsePdfReport(buffer);
+    } else if (lowerName.endsWith(".docx") || lowerName.endsWith(".doc") || lowerName.endsWith(".pdf")) {
+      throw new Error(`PDF and Word files are only supported for STARTER, VETERINARY, INCIDENT, and STIPE reports.`);
     } else {
       parsedResult = await parseExcelRows(buffer);
     }
@@ -1202,25 +1110,13 @@ export async function importFile({ fileName, buffer, fileType, uploadedBy, sourc
 
   await db.$transaction(
     async (tx) => {
-      // Save copy of accepted file in uploads/ if filesystem is writable
-      try {
-        const uploadsDir = path.resolve(process.cwd(), "uploads");
-        if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
-        const safeDiskFileName = `${Date.now()}_${fileName.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
-        fs.writeFileSync(path.join(uploadsDir, safeDiskFileName), buffer);
-      } catch (diskErr) {
-        console.warn("Could not save copy to uploads/ directory:", diskErr.message);
-      }
-
-      createdUploadedFile = await tx.uploadedFile.create({
-        data: {
-          name: fileName,
-          size,
-          hash,
-          fileType,
-          status: "PROCESSED",
-          uploadedBy: typeof uploadedBy === "number" ? uploadedBy : null,
-        },
+      createdUploadedFile = await upsertUploadedFile(tx, {
+        name: fileName,
+        size,
+        hash,
+        fileType,
+        status: "PROCESSED",
+        uploadedBy,
       });
 
       if (fileType === "MASTER") {
@@ -1365,7 +1261,6 @@ export async function importFile({ fileName, buffer, fileType, uploadedBy, sourc
             const oldEntryIds = oldEntries.map((e) => e.id);
             if (oldEntryIds.length > 0) {
               await tx.decision.deleteMany({ where: { entryId: { in: oldEntryIds } } });
-              await tx.handicapDecision.deleteMany({ where: { entryId: { in: oldEntryIds } } });
               await tx.rating.deleteMany({ where: { entryId: { in: oldEntryIds } } });
               await tx.raceEntry.deleteMany({ where: { id: { in: oldEntryIds } } });
             }
@@ -1410,7 +1305,7 @@ export async function importFile({ fileName, buffer, fileType, uploadedBy, sourc
           });
         }
 
-        // For Current Race file: save currat and race entry extras in data/race-extras/<fileId>.json
+        // For Current Race file: save currat and race entry extras in database (AuditLog)
         // Do NOT overwrite Horse.currentRating in master table
         if (fileType === "RACE") {
           const extrasMap = {};
@@ -1426,7 +1321,7 @@ export async function importFile({ fileName, buffer, fileType, uploadedBy, sourc
               raceNo: row.raceNo,
             };
           }
-          saveRaceExtras(createdUploadedFile.id, extrasMap);
+          await saveRaceExtras(createdUploadedFile.id, extrasMap, tx);
         } else {
           // For HISTORY/MASTER: update horse currentRating
           const horseUpdatesMap = new Map();
@@ -1591,26 +1486,14 @@ async function handleActiveHorseImport({ fileName, buffer, size, hash, uploadedB
 
   await db.$transaction(
     async (tx) => {
-      // 1. Save copy of accepted file in uploads/ if filesystem is writable
-      try {
-        const uploadsDir = path.resolve(process.cwd(), "uploads");
-        if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
-        const safeDiskFileName = `${Date.now()}_${fileName.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
-        fs.writeFileSync(path.join(uploadsDir, safeDiskFileName), buffer);
-      } catch (diskErr) {
-        console.warn("Could not save copy to uploads/ directory:", diskErr.message);
-      }
-
-      // 2. Write UploadedFile record
-      createdUploadedFile = await tx.uploadedFile.create({
-        data: {
-          name: fileName,
-          size,
-          hash,
-          fileType: "ACTIVE_HORSE",
-          status: "PROCESSED",
-          uploadedBy: typeof uploadedBy === "number" ? uploadedBy : null,
-        },
+      // Write UploadedFile record
+      createdUploadedFile = await upsertUploadedFile(tx, {
+        name: fileName,
+        size,
+        hash,
+        fileType: "ACTIVE_HORSE",
+        status: "PROCESSED",
+        uploadedBy,
       });
 
       // Requirement 3: createMany horses (skipDuplicates)
@@ -1909,24 +1792,13 @@ async function handleCoefficientImport({ fileName, buffer, size, hash, uploadedB
   let createdUploadedFile = null;
   await db.$transaction(
     async (tx) => {
-      try {
-        const uploadsDir = path.resolve(process.cwd(), "uploads");
-        if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
-        const safeDiskFileName = `${Date.now()}_${fileName.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
-        fs.writeFileSync(path.join(uploadsDir, safeDiskFileName), buffer);
-      } catch (diskErr) {
-        console.warn("Could not save copy to uploads/ directory:", diskErr.message);
-      }
-
-      createdUploadedFile = await tx.uploadedFile.create({
-        data: {
-          name: fileName,
-          size,
-          hash,
-          fileType: "COEFFICIENT",
-          status: "PROCESSED",
-          uploadedBy: typeof uploadedBy === "number" ? uploadedBy : null,
-        },
+      createdUploadedFile = await upsertUploadedFile(tx, {
+        name: fileName,
+        size,
+        hash,
+        fileType: "COEFFICIENT",
+        status: "PROCESSED",
+        uploadedBy,
       });
 
       // Requirement 4: deleteMany, then one createMany

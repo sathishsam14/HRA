@@ -82,14 +82,9 @@ export default function OverrideDialog({
             <div className="w-9 h-9 rounded-lg bg-blue-50 text-[#2563EB] flex items-center justify-center">
               <SlidersHorizontal className="w-5 h-5" />
             </div>
-            <div>
               <h3 className="text-base font-bold text-slate-900 leading-tight">
                 Override rating
               </h3>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Manual steward discretion adjustment
-              </p>
-            </div>
           </div>
           <button
             onClick={onClose}
@@ -140,7 +135,7 @@ export default function OverrideDialog({
                     {recRating}
                   </span>
                   <span className="text-xs font-semibold text-[#2563EB]">
-                    {algoChange >= 0 ? `+${algoChange}` : algoChange} algo
+                    {algoChange >= 0 ? `+${algoChange}` : algoChange} added
                   </span>
                 </div>
               </div>
@@ -153,9 +148,6 @@ export default function OverrideDialog({
               <label className="text-xs font-semibold text-slate-900">
                 Final rating change
               </label>
-              <span className="text-[11px] text-slate-500">
-                Relative to algorithmic rec
-              </span>
             </div>
 
             <div className="flex items-center border border-slate-300 rounded-lg overflow-hidden h-11 bg-white">
@@ -205,9 +197,6 @@ export default function OverrideDialog({
               <label className="text-xs font-semibold text-slate-900">
                 Override reason <span className="text-red-500">*</span>
               </label>
-              <span className="text-[11px] text-slate-500">
-                Stewards review mandatory
-              </span>
             </div>
             <textarea
               rows={3}
@@ -223,14 +212,6 @@ export default function OverrideDialog({
               <p className="text-xs text-red-600 mt-1">{error}</p>
             )}
           </div>
-
-          {/* User attribution block */}
-          <div className="flex items-center gap-2 p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-600">
-            <Lock className="w-3.5 h-3.5 text-slate-400 flex-shrink-0" />
-            <span className="text-[11px]">
-              User: {user?.name || "Handicapper A"} · {nowFormatted} (added automatically)
-            </span>
-          </div>
         </div>
 
         {/* Footer */}
@@ -241,7 +222,7 @@ export default function OverrideDialog({
             className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-slate-900 cursor-pointer"
           >
             <RotateCcw className="w-3.5 h-3.5" />
-            <span>Reset to Algo</span>
+            <span>Reset</span>
           </button>
 
           <div className="flex items-center gap-2">

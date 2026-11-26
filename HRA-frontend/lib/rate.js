@@ -4,7 +4,7 @@
 // and persists Rating records into PostgreSQL for the Next.js frontend.
 
 import { db } from "./db.js";
-import { findRaceExtraEntry } from "./rating/raceExtras.js";
+import { loadRaceExtrasLookup } from "./rating/raceExtras.js";
 import { getPythonApiUrl } from "./pythonApi.js";
 
 /**
@@ -71,6 +71,7 @@ export async function rateMeeting(tx = null) {
 
   const meetingEntries = [];
   const entryMap = new Map();
+  const getRaceExtra = await loadRaceExtrasLookup(client);
 
   for (const race of openRaces) {
     const detectedType = raceType(race.category);
@@ -84,7 +85,7 @@ export async function rateMeeting(tx = null) {
     const raceDateStr = race.raceDate.toISOString().slice(0, 10);
 
     for (const entry of race.entries) {
-      const raceExtra = findRaceExtraEntry({
+      const raceExtra = getRaceExtra({
         raceDate: race.raceDate,
         raceNo: race.raceNo,
         horseName: entry.horse.name,

@@ -7,7 +7,7 @@ import { NextResponse } from "next/server";
 import ExcelJS from "exceljs";
 import db from "@/lib/db";
 import { getSession } from "@/lib/auth";
-import { findRaceExtraEntry } from "@/lib/rating/raceExtras";
+import { loadRaceExtrasLookup } from "@/lib/rating/raceExtras";
 import { getPythonApiUrl } from "@/lib/pythonApi";
 
 export async function GET(request) {
@@ -108,6 +108,8 @@ export async function GET(request) {
     };
     headerRow.alignment = { vertical: "middle", horizontal: "center" };
 
+    const getRaceExtra = await loadRaceExtrasLookup();
+
     for (const race of races) {
       const raceDateStr = race.raceDate.toLocaleDateString("en-GB", {
         day: "2-digit",
@@ -120,7 +122,7 @@ export async function GET(request) {
         const rating = entry.rating || null;
         const decision = entry.decision || null;
 
-        const raceExtra = findRaceExtraEntry({
+        const raceExtra = getRaceExtra({
           raceDate: race.raceDate,
           raceNo: race.raceNo,
           horseName: horse.name,

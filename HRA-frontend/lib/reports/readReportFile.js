@@ -1,15 +1,8 @@
 // lib/reports/readReportFile.js
-// Multi-format Report Reader for Bangalore Turf Club (BTC)
-// Turns any accepted report file into standardized lines and tables for parseReports.js:
-// - .docx: mammoth (HTML converter)
-// - .doc: word-extractor
-// - .pdf: pdf-parse (checks for text layer / scans)
-// - .txt: plain text lines
-// - .xlsx, .xls, .csv: row-to-table structure with heading recognition
+// Report Reader for Bangalore Turf Club (BTC)
+// Turns tabular/text report files (.txt, .xlsx, .xls, .csv) into standardized lines and tables.
+// PDF and Word (.doc/.docx) reports are handled by the Python backend (/api/upload-report).
 
-import mammoth from "mammoth";
-import WordExtractor from "word-extractor";
-import { PDFParse } from "pdf-parse";
 import * as XLSX from "xlsx";
 import { parseMeetingDate } from "./parseReports.js";
 
@@ -218,49 +211,11 @@ export async function readReportFile({ buffer, fileName, reportType }) {
 
   const name = String(fileName || "").toLowerCase();
 
-  // 1. .docx (Word)
-  if (name.endsWith(".docx")) {
-    const { value: html } = await mammoth.convertToHtml(
-      { buffer },
-      { ignoreImages: true }
-    );
-    return { html, format: "Word" };
+  if (name.endsWith(".docx") || name.endsWith(".doc") || name.endsWith(".pdf")) {
+    throw new Error("PDF and Word reports are parsed by the Python backend (/api/upload-report).");
   }
 
-  // 2. .doc (Word)
-  if (name.endsWith(".doc")) {
-    const extractor = new WordExtractor();
-    const doc = await extractor.extract(buffer);
-    const body = doc.getBody() || "";
-    const lines = body.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-    const html = linesToHtml(lines);
-    return { html, format: "Word", rawText: body };
-  }
-
-  // 3. .pdf (PDF)
-  if (name.endsWith(".pdf")) {
-    let text = "";
-    try {
-      const parser = new PDFParse({ data: buffer });
-      const textResult = await parser.getText();
-      await parser.destroy();
-      text = textResult?.text || "";
-    } catch (pdfErr) {
-      throw new Error(`Failed to read PDF file: ${pdfErr.message}`);
-    }
-
-    if (!text || text.trim().length === 0) {
-      throw new Error(
-        "This PDF is a scan with no readable text. Please send a text PDF or a Word file."
-      );
-    }
-
-    const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-    const html = linesToHtml(lines);
-    return { html, format: "PDF", rawText: text };
-  }
-
-  // 4. .txt (Text)
+  // .txt (Text)
   if (name.endsWith(".txt")) {
     const text = buffer.toString("utf-8");
     const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
