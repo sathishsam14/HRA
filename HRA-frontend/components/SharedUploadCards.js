@@ -4,7 +4,7 @@
 // Renders the 5 active upload options in the SAME ROW:
 // 1) Current Race (BWM)
 // 2) Starter Report
-// 3) Veterinary / Pertinent Report
+// 3) Veterinary Report
 // 4) Incidence Report
 // 5) Stipe Report
 
@@ -47,7 +47,7 @@ export const UPLOAD_FIELDS = [
   },
   {
     type: "VETERINARY",
-    title: "Veterinary / Pertinent",
+    title: "Veterinary",
     subtitle: "Clinical remarks & treatments",
     icon: FileSpreadsheet,
     accept: ".docx,.doc,.pdf,.txt,.xlsx,.xls,.csv",
