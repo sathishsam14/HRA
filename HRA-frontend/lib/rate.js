@@ -41,7 +41,7 @@ export function applyOverride(result, { finalChange, reason, userId, at = new Da
  *
  * @param {object} [tx] Optional Prisma client or transaction
  */
-export async function rateMeeting(tx = null) {
+export async function rateMeeting(tx = null, userId = null) {
   const client = tx || db;
 
   const openRaces = await client.race.findMany({
@@ -179,6 +179,20 @@ export async function rateMeeting(tx = null) {
     });
   }
 
+  await client.auditLog.create({
+    data: {
+      action: "GENERATE_RATINGS",
+      entity: "Race",
+      entityId: openRaces.map((r) => r.id).join(","),
+      userId: typeof userId === "number" ? userId : null,
+      after: {
+        raceIds: openRaces.map((r) => r.id),
+        racesRated: openRaces.length,
+        entriesRated: ratings.length,
+      },
+    },
+  });
+
   return {
     ok: true,
     racesRated: openRaces.length,
@@ -187,6 +201,6 @@ export async function rateMeeting(tx = null) {
   };
 }
 
-export async function reRateAllOpenRaces(tx = null) {
-  return rateMeeting(tx);
+export async function reRateAllOpenRaces(tx = null, userId = null) {
+  return rateMeeting(tx, userId);
 }

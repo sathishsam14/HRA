@@ -9,6 +9,10 @@ import ExcelJS from "exceljs";
 import db from "@/lib/db";
 import { getSession } from "@/lib/auth";
 import { getPythonApiUrl } from "@/lib/pythonApi";
+import {
+  fetchReportEvidenceMap,
+  formatReportRemarksForEntry,
+} from "@/lib/rating/pythonData";
 
 export async function GET(request) {
   try {
@@ -119,11 +123,19 @@ export async function GET(request) {
     headerRow.alignment = { vertical: "middle", horizontal: "center" };
     headerRow.height = 24;
 
+    const evidenceRes = await fetchReportEvidenceMap(
+      entries.map((e) => e.horse?.name).filter(Boolean),
+      getPythonApiUrl()
+    );
+
     for (const e of entries) {
       const r = e.race;
       const h = e.horse;
       const rating = e.rating;
       const decision = e.decision;
+      const raceIsoDate = r.raceDate.toISOString().slice(0, 10);
+      const pyEvents = evidenceRes.byHorse.get(String(h.name || "").trim().toUpperCase()) || [];
+      const pyRemarks = formatReportRemarksForEntry(pyEvents, raceIsoDate);
 
       const finalChange = decision ? decision.finalChange : (rating?.recommendedChange ?? null);
       const finalRating = decision ? decision.finalRating : (rating?.recommendedRating ?? h.currentRating ?? null);
@@ -152,9 +164,9 @@ export async function GET(request) {
         trainer: e.trainer || h.trainer || "—",
         penetrometer: e.penetrometer !== null ? e.penetrometer : "—",
         railing: e.railing || "—",
-        starterReport: e.starterRemark || "—",
-        veterinaryReport: e.veterinaryRemark || "—",
-        incidentReport: e.incidentRemark || "—",
+        starterReport: pyRemarks.starterRemark || "—",
+        veterinaryReport: pyRemarks.veterinaryRemark || "—",
+        incidentReport: pyRemarks.incidentRemark || "—",
         status: decision ? (decision.overridden ? "OVERRIDDEN" : "RATED") : (rating ? rating.status : "REVIEWED"),
         override: decision ? (decision.overridden ? "Yes" : "No") : "No",
         finalChange: finalChange !== null ? (finalChange > 0 ? `+${finalChange}` : String(finalChange)) : "—",

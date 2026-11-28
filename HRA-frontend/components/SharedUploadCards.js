@@ -68,7 +68,7 @@ export const UPLOAD_FIELDS = [
   {
     type: "STIPE",
     title: "Stipe",
-    subtitle: "Stipendiary Stewards findings",
+    subtitle: "",
     icon: Flag,
     accept: ".docx,.doc,.pdf,.txt,.xlsx,.xls,.csv",
     formatBadge: "Word · PDF · Excel · Text",

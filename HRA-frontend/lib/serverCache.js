@@ -19,7 +19,7 @@ export async function getDataVersion() {
   }
 
   try {
-    const [fileStats, decisionStats, raceStats] = await Promise.all([
+    const [fileStats, decisionStats, raceStats, generateStats] = await Promise.all([
       db.uploadedFile.aggregate({
         _max: { id: true, uploadedAt: true },
         _count: { id: true },
@@ -32,6 +32,11 @@ export async function getDataVersion() {
         _max: { id: true },
         _count: { id: true },
       }),
+      db.auditLog.aggregate({
+        where: { action: "GENERATE_RATINGS" },
+        _max: { id: true },
+        _count: { id: true },
+      }),
     ]);
 
     const maxFile = fileStats._max.id ?? 0;
@@ -40,8 +45,10 @@ export async function getDataVersion() {
     const decCount = decisionStats._count.id ?? 0;
     const maxRace = raceStats._max.id ?? 0;
     const raceCount = raceStats._count.id ?? 0;
+    const maxGen = generateStats._max.id ?? 0;
+    const genCount = generateStats._count.id ?? 0;
 
-    cachedDataVersion = `v_${maxFile}_${fileCount}_${maxDec}_${decCount}_${maxRace}_${raceCount}`;
+    cachedDataVersion = `v_${maxFile}_${fileCount}_${maxDec}_${decCount}_${maxRace}_${raceCount}_${maxGen}_${genCount}`;
     lastVersionCheck = now;
     return cachedDataVersion;
   } catch (err) {
@@ -64,6 +71,11 @@ export async function getCachedData(namespace, paramsKey, fetchFn) {
 
   // Not in cache or stale version -> fetch from DB
   const freshData = await fetchFn();
+  if (freshData && freshData._skipCache) {
+    const { _skipCache, ...cleanData } = freshData;
+    return cleanData;
+  }
+
   memoryCache.set(fullKey, {
     version: currentVersion,
     timestamp: Date.now(),

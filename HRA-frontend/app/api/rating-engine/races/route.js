@@ -10,6 +10,12 @@ import { getSession } from "@/lib/auth";
 import { loadRaceExtrasLookup } from "@/lib/rating/raceExtras";
 import { getCachedData } from "@/lib/serverCache.js";
 import { getPythonApiUrl } from "@/lib/pythonApi";
+import {
+  fetchReportEvidenceMap,
+  formatReportRemarksForEntry,
+  fetchHorseHistorySummary,
+} from "@/lib/rating/pythonData";
+import { getStaleRatingsStatus } from "@/lib/rating/staleCheck";
 
 export async function GET(request) {
   try {
@@ -134,12 +140,65 @@ export async function GET(request) {
         ],
       });
 
-      // 4. Format payload for UI
+      // 4. Fetch Python report evidence, horse history summary, model info, and stale status in parallel
       const getRaceExtra = await loadRaceExtrasLookup();
+      const pythonApiUrl = getPythonApiUrl();
+      const horseNamesForPython = [];
+      const historyRequestEntries = [];
+      const seenHistoryKeys = new Set();
+      for (const race of races) {
+        const rDateStr = race.raceDate.toISOString().slice(0, 10);
+        for (const entry of race.entries) {
+          const hName = entry.horse?.name;
+          if (!hName) continue;
+          horseNamesForPython.push(hName);
+          const hk = `${hName.trim().toUpperCase()}|${rDateStr}`;
+          if (!seenHistoryKeys.has(hk)) {
+            seenHistoryKeys.add(hk);
+            historyRequestEntries.push({ horse_name: hName, racedate: rDateStr });
+          }
+        }
+      }
+
+      let modelInfoOk = false;
+      let masterDataReady = false;
+      let masterEntries = 0;
+      let trainingDateInfo = "";
+      let modelSha256 = "";
+      let reportEventsLoaded = 0;
+      let loadedReportSources = [];
+      let useConfirmedRaces = true;
+
+      const [evidenceRes, historyRes, modelInfoResult, staleStatus] = await Promise.all([
+        fetchReportEvidenceMap(horseNamesForPython, pythonApiUrl),
+        fetchHorseHistorySummary(historyRequestEntries, pythonApiUrl),
+        fetch(`${pythonApiUrl}/api/model-info`, { cache: "no-store" })
+          .then(async (r) => (r.ok ? { ok: true, data: await r.json() } : { ok: false }))
+          .catch(() => ({ ok: false })),
+        getStaleRatingsStatus(races.map((r) => r.id)),
+      ]);
+
+      if (modelInfoResult?.ok && modelInfoResult.data) {
+        modelInfoOk = true;
+        const info = modelInfoResult.data;
+        masterDataReady = Boolean(info.master_data_loaded);
+        masterEntries = info.master_entries || 0;
+        modelSha256 = info.model_sha256 || "";
+        reportEventsLoaded = info.report_events_loaded ?? 0;
+        loadedReportSources = Array.isArray(info.loaded_report_sources) ? info.loaded_report_sources : [];
+        useConfirmedRaces = info.use_confirmed_races !== undefined ? Boolean(info.use_confirmed_races) : true;
+        const ti = info.training_info || {};
+        if (ti.min_date && ti.max_date && ti.min_date !== "N/A") {
+          trainingDateInfo = ` · ${ti.min_date} to ${ti.max_date}`;
+        }
+      }
+
       const formattedRaces = races.map((race) => {
         const displayRaceType = race.raceType === "TERMS" ? "Terms" : "Handicap";
+        const raceDateStr = race.raceDate.toISOString().slice(0, 10);
         const entries = race.entries.map((entry) => {
           const horse = entry.horse || {};
+          const horseUpper = String(horse.name || "").trim().toUpperCase();
           const rating = entry.rating || null;
           const decision = entry.decision || null;
 
@@ -184,6 +243,10 @@ export async function GET(request) {
             ? decision.finalRating
             : (startRating != null ? startRating + finalChange : (rating?.recommendedRating ?? null));
 
+          const pyEvents = evidenceRes.byHorse.get(horseUpper) || [];
+          const formattedRemarks = formatReportRemarksForEntry(pyEvents, raceDateStr);
+          const pyHistory = historyRes.summaries?.[horseUpper] || null;
+
           return {
             id: entry.id,
             entryId: entry.id,
@@ -192,6 +255,9 @@ export async function GET(request) {
             horseName: horse.name || "Unknown Horse",
             sexCategory: horse.sexCategory || "—",
             previousRuns: horse.previousRuns ?? 0,
+            careerRuns: pyHistory?.career_runs ?? null,
+            lastRunDate: pyHistory?.last_run_date ?? null,
+            layoffDays: pyHistory?.layoff_days ?? null,
             currentRating: startRating,
             startRating: startRating,
             raceCurrat,
@@ -209,21 +275,10 @@ export async function GET(request) {
             shoes: entry.shoes || "—",
             penetrometer: entry.penetrometer ?? null,
             railing: entry.railing || "—",
-            starterRemark: entry.starterRemark || null,
-            veterinaryRemark: entry.veterinaryRemark || null,
-            incidentRemark: entry.incidentRemark || null,
-            exception:
-              entry.starterRemark || entry.veterinaryRemark || entry.incidentRemark
-                ? [
-                    entry.starterRemark ? `[Starter] ${entry.starterRemark}` : null,
-                    entry.veterinaryRemark ? `[Vet] ${entry.veterinaryRemark}` : null,
-                    entry.incidentRemark
-                      ? (entry.incidentRemark.startsWith("[Stipe]") ? entry.incidentRemark : `[Incidents] ${entry.incidentRemark}`)
-                      : null,
-                  ]
-                    .filter(Boolean)
-                    .join(" | ")
-                : "None",
+            starterRemark: formattedRemarks.starterRemark,
+            veterinaryRemark: formattedRemarks.veterinaryRemark,
+            incidentRemark: formattedRemarks.incidentRemark,
+            exception: formattedRemarks.exception,
             ratingStatus: rating?.status || "NOT_RATED",
             recommendedChange: rating?.recommendedChange ?? null,
             recommendedRating: rating?.recommendedRating ?? null,
@@ -271,42 +326,22 @@ export async function GET(request) {
       const activeRatingMode = "python";
       const activeRatingModeLabel = "Python ML Engine (BTC Model)";
 
-      let masterDataReady = false;
-      let masterEntries = 0;
-      let trainingDateInfo = "";
-      let modelSha256 = "";
-      let reportEventsLoaded = 0;
-      let useConfirmedRaces = true;
-      try {
-        const infoRes = await fetch(`${getPythonApiUrl()}/api/model-info`, { cache: "no-store" });
-        if (infoRes.ok) {
-          const info = await infoRes.json();
-          masterDataReady = Boolean(info.master_data_loaded);
-          masterEntries = info.master_entries || 0;
-          modelSha256 = info.model_sha256 || "";
-          reportEventsLoaded = info.report_events_loaded ?? 0;
-          useConfirmedRaces = info.use_confirmed_races !== undefined ? Boolean(info.use_confirmed_races) : true;
-          const ti = info.training_info || {};
-          if (ti.min_date && ti.max_date && ti.min_date !== "N/A") {
-            trainingDateInfo = ` · ${ti.min_date} to ${ti.max_date}`;
-          }
-        }
-      } catch {
-        // Backend status fallback
-      }
-
       const shortHash = modelSha256 ? modelSha256.slice(0, 8) : "unknown";
       const patternInfo = {
         loaded: masterDataReady,
         modelSha256,
         reportEventsLoaded,
+        loadedReportSources,
         useConfirmedRaces,
         summaryText: masterDataReady
           ? `Python ML Service: ${masterEntries.toLocaleString()} training rows${trainingDateInfo} · btc_rating_model.py ${shortHash} · Reports: ${reportEventsLoaded} events · USE_CONFIRMED_RACES=${useConfirmedRaces}`
           : "Python ML Service: Master data not loaded",
       };
 
+      const pythonFailed = !evidenceRes.ok || !historyRes.ok || !modelInfoOk || !masterDataReady;
+
       return {
+        _skipCache: pythonFailed,
         filters: {
           venues,
           dates,
@@ -319,6 +354,10 @@ export async function GET(request) {
         ratingMode: activeRatingMode,
         ratingModeLabel: activeRatingModeLabel,
         patternInfo,
+        loadedReportSources,
+        ratingsStale: staleStatus.ratingsStale,
+        lastUploadAt: staleStatus.lastUploadAt,
+        lastGenerateAt: staleStatus.lastGenerateAt,
         masterDataReady,
         masterEntries,
         races: formattedRaces,

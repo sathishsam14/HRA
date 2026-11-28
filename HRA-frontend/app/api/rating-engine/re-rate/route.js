@@ -14,7 +14,7 @@ export async function POST(request) {
     const session = await getSession(request);
     await requireRole(["ADMIN", "HANDICAPPER"], session);
 
-    const result = await rateMeeting();
+    const result = await rateMeeting(null, session?.id ?? null);
     invalidateServerCache();
 
     return NextResponse.json({
