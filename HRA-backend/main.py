@@ -77,6 +77,42 @@ _reports_version = 0
 _trained_reports_version = -1
 _version_lock = threading.Lock()
 _model_lock = threading.Lock()
+_history_bsm_cache = None
+_history_cache_lock = threading.Lock()
+
+REPORT_SOURCE_ORDER = ["vet", "starter", "incident", "stewards"]
+
+
+def get_loaded_report_sources() -> List[str]:
+    """Reads stored .docx report files directly from REPORTS_DIR (never triggers training)."""
+    loaded = []
+    for src in REPORT_SOURCE_ORDER:
+        src_dir = os.path.join(REPORTS_DIR, src)
+        if os.path.isdir(src_dir):
+            if any(f.lower().endswith(".docx") for f in os.listdir(src_dir)):
+                loaded.append(src)
+    return loaded
+
+
+def get_horse_run_dates_lookup() -> Dict[str, List[pd.Timestamp]]:
+    """
+    Lightweight, read-only in-memory cache mapping UPPER(horse_name) -> sorted list of run dates
+    from BSM.xlsx. Loaded lazily once without training RatingModel.
+    """
+    global _history_bsm_cache
+    with _history_cache_lock:
+        if _history_bsm_cache is None and os.path.exists(DEFAULT_BSM_PATH):
+            bsm_df = load_bsm(DEFAULT_BSM_PATH)
+            lookup: Dict[str, List[pd.Timestamp]] = {}
+            if bsm_df is not None and not bsm_df.empty:
+                for _, row in bsm_df[["horse", "d"]].dropna(subset=["horse", "d"]).iterrows():
+                    h_key = str(row["horse"]).strip().upper()
+                    if h_key:
+                        lookup.setdefault(h_key, []).append(pd.Timestamp(row["d"]).normalize())
+                for h_key in lookup:
+                    lookup[h_key].sort()
+            _history_bsm_cache = lookup
+        return _history_bsm_cache or {}
 
 
 def is_use_confirmed_races_enabled() -> bool:
@@ -538,6 +574,10 @@ async def upload_master(file: UploadFile = File(...)):
     shutil.move(temp_path, DEFAULT_BSM_PATH)
     print(f"💾 [BACKEND] Promoted new validated master BSM to: {DEFAULT_BSM_PATH} ({len(contents)} bytes)")
 
+    global _history_bsm_cache
+    with _history_cache_lock:
+        _history_bsm_cache = None
+
     bsm, _ = get_base_data_and_model(force_reload=True)
 
     return {
@@ -753,15 +793,21 @@ def get_master_records():
 
 @app.get("/api/model-info")
 def get_model_info():
-    """Returns metadata about the active training set, entries count, report events, and model hash."""
-    bsm, _ = get_base_data_and_model()
-    is_loaded = bsm is not None and not bsm.empty
+    """Read-only metadata about the active training set and stored report files (never triggers rebuild)."""
+    is_loaded = _cached_bsm is not None and not _cached_bsm.empty
+    master_entries = len(_cached_bsm) if is_loaded else 0
+    if not is_loaded and os.path.exists(DEFAULT_BSM_PATH):
+        lookup = get_horse_run_dates_lookup()
+        master_entries = sum(len(v) for v in lookup.values())
+        is_loaded = master_entries > 0
+    loaded_sources = get_loaded_report_sources()
     return {
         "success": True,
         "master_data_loaded": is_loaded,
-        "master_entries": len(bsm) if is_loaded else 0,
+        "master_entries": master_entries,
         "model_sha256": _training_info.get("model_sha256") or get_model_file_sha256(),
         "report_events_loaded": _training_info.get("report_events_loaded", 0),
+        "loaded_report_sources": loaded_sources,
         "use_confirmed_races": _training_info.get("use_confirmed_races", is_use_confirmed_races_enabled()),
         "training_info": _training_info,
     }
@@ -793,6 +839,48 @@ class MeetingPayload(BaseModel):
     entries: List[MeetingEntrantPayload]
 
 
+class HorseHistoryEntry(BaseModel):
+    horse_name: str
+    racedate: Optional[str] = None
+
+
+class HorseHistoryRequest(BaseModel):
+    entries: List[HorseHistoryEntry] = []
+
+
+@app.post("/api/horse-history-summary")
+def get_horse_history_summary(payload: HorseHistoryRequest):
+    """
+    Read-only endpoint returning career_runs, last_run_date, and layoff_days
+    from the lightweight BSM run-date lookup cache (never triggers model training).
+    """
+    lookup = get_horse_run_dates_lookup()
+    summaries = {}
+    for item in payload.entries:
+        raw_name = str(item.horse_name or "").strip()
+        if not raw_name:
+            continue
+        h_key = raw_name.upper()
+        run_dates = lookup.get(h_key, [])
+        race_dt = pd.to_datetime(item.racedate, errors="coerce") if item.racedate else pd.NaT
+        if pd.notna(race_dt):
+            race_norm = pd.Timestamp(race_dt).normalize()
+            prior = [d for d in run_dates if d < race_norm]
+            layoff_days = int((race_norm - prior[-1]).days) if prior else None
+        else:
+            prior = run_dates
+            layoff_days = None
+
+        summaries[h_key] = {
+            "horse_name": raw_name,
+            "career_runs": len(prior),
+            "last_run_date": str(prior[-1].date()) if prior else None,
+            "layoff_days": layoff_days,
+        }
+
+    return {"success": True, "summaries": summaries}
+
+
 class ReportEvidenceRequest(BaseModel):
     horses: List[str] = []
 
@@ -802,11 +890,10 @@ def get_report_evidence(payload: ReportEvidenceRequest):
     """
     Returns mined report evidence rows matching the client's 'Report Evidence' sheet:
     ['Horse', 'Report date', 'Source', 'Flag', 'Remark (truncated)'], sorted by horse, date.
+    Read-only: never triggers model rebuild/retraining.
     """
-    bsm, _ = get_base_data_and_model()
-    bsm_names = set(bsm["horse"].dropna().astype(str).str.strip()) if bsm is not None else set()
     req_names = {str(h).strip() for h in payload.horses if str(h).strip()}
-    ev = load_all_report_events(bsm_names | req_names)
+    ev = load_all_report_events(req_names)
 
     rows = []
     if ev is not None and not ev.empty:

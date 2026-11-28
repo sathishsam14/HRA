@@ -11,6 +11,7 @@ import { getSession, requireRole } from "@/lib/auth";
 import { applyOverride } from "@/lib/rate.js";
 import { invalidateServerCache } from "@/lib/serverCache.js";
 import { getPythonApiUrl } from "@/lib/pythonApi";
+import { getStaleRatingsStatus } from "@/lib/rating/staleCheck";
 
 export async function POST(request) {
   try {
@@ -57,6 +58,18 @@ export async function POST(request) {
       return NextResponse.json(
         { error: "Race is already REVIEWED and cannot be submitted again" },
         { status: 400 }
+      );
+    }
+
+    // Reject Submit/Confirm when ratings are older than the latest relevant upload
+    const staleStatus = await getStaleRatingsStatus([race.id]);
+    if (staleStatus.ratingsStale) {
+      return NextResponse.json(
+        {
+          error:
+            "Ratings are out of date because a newer Current Race or report file was uploaded after the last Generate Rating. Please click Generate Rating before submitting.",
+        },
+        { status: 409 }
       );
     }
 

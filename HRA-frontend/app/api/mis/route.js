@@ -10,6 +10,10 @@ import db from "@/lib/db";
 import { getSession } from "@/lib/auth";
 import { getCachedData } from "@/lib/serverCache.js";
 import { getPythonApiUrl } from "@/lib/pythonApi";
+import {
+  fetchReportEvidenceMap,
+  formatReportRemarksForEntry,
+} from "@/lib/rating/pythonData";
 
 export async function GET(request) {
   try {
@@ -51,6 +55,15 @@ export async function GET(request) {
         ],
       });
 
+      const pythonApiUrl = getPythonApiUrl();
+      const dbHorseNames = dbEntries.map((e) => e.horse?.name).filter(Boolean);
+      const [evidenceRes, masterRes] = await Promise.all([
+        fetchReportEvidenceMap(dbHorseNames, pythonApiUrl),
+        fetch(`${pythonApiUrl}/api/master-records`, { cache: "no-store" })
+          .then(async (r) => (r.ok ? { ok: true, data: await r.json() } : { ok: false }))
+          .catch(() => ({ ok: false })),
+      ]);
+
       const dbRows = dbEntries.map((e) => {
         const r = e.race;
         const h = e.horse;
@@ -59,11 +72,14 @@ export async function GET(request) {
         const finalChange = decision ? decision.finalChange : null;
         const finalRating = decision ? decision.finalRating : (h.currentRating ?? null);
         const isConfirmed = decision !== null && decision !== undefined;
+        const raceIsoDate = r.raceDate.toISOString().slice(0, 10);
+        const pyEvents = evidenceRes.byHorse.get(String(h.name || "").trim().toUpperCase()) || [];
+        const pyRemarks = formatReportRemarksForEntry(pyEvents, raceIsoDate);
 
         return {
           id: e.id,
           venue: r.venue || "—",
-          raceDate: r.raceDate.toISOString().slice(0, 10),
+          raceDate: raceIsoDate,
           raceDateFormatted: r.raceDate.toLocaleDateString("en-GB", {
             day: "2-digit",
             month: "short",
@@ -89,9 +105,9 @@ export async function GET(request) {
           trainer: e.trainer || h.trainer || "—",
           penetrometer: e.penetrometer !== null ? e.penetrometer : "—",
           railing: e.railing || "—",
-          starterReport: e.starterRemark || "—",
-          veterinaryReport: e.veterinaryRemark || "—",
-          incidentReport: e.incidentRemark || "—",
+          starterReport: pyRemarks.starterRemark || "—",
+          veterinaryReport: pyRemarks.veterinaryRemark || "—",
+          incidentReport: pyRemarks.incidentRemark || "—",
           status: isConfirmed ? (decision.overridden ? "OVERRIDDEN" : "RATED") : "NOT_RATED",
           override: decision ? (decision.overridden ? "Yes" : "No") : "No",
           finalChange: finalChange !== null ? (finalChange > 0 ? `+${finalChange}` : String(finalChange)) : "—",
@@ -104,16 +120,10 @@ export async function GET(request) {
 
       // 2. Fetch all master Excel (BSM.xlsx) records from Python backend
       let masterRows = [];
-      try {
-        const mRes = await fetch(`${getPythonApiUrl()}/api/master-records`, { cache: "no-store" });
-        if (mRes.ok) {
-          const mData = await mRes.json();
-          if (mData.success && Array.isArray(mData.rows)) {
-            masterRows = mData.rows;
-          }
-        }
-      } catch (err) {
-        console.warn("Could not fetch master BSM records for MIS:", err.message);
+      let masterOk = false;
+      if (masterRes?.ok && masterRes.data?.success && Array.isArray(masterRes.data.rows)) {
+        masterRows = masterRes.data.rows;
+        masterOk = masterRows.length > 0;
       }
 
       const combinedRows = [...dbRows, ...masterRows];
@@ -166,6 +176,7 @@ export async function GET(request) {
       const pagedRows = filtered.slice(start, start + pageSize);
 
       return {
+        _skipCache: !masterOk || !evidenceRes.ok,
         filters: {
           venues,
           dates,

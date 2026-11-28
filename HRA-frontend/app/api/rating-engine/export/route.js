@@ -9,6 +9,10 @@ import db from "@/lib/db";
 import { getSession } from "@/lib/auth";
 import { loadRaceExtrasLookup } from "@/lib/rating/raceExtras";
 import { getPythonApiUrl } from "@/lib/pythonApi";
+import {
+  fetchReportEvidenceMap,
+  formatReportRemarksForEntry,
+} from "@/lib/rating/pythonData";
 
 export async function GET(request) {
   try {
@@ -109,8 +113,11 @@ export async function GET(request) {
     headerRow.alignment = { vertical: "middle", horizontal: "center" };
 
     const getRaceExtra = await loadRaceExtrasLookup();
+    const allHorseNames = races.flatMap((r) => r.entries.map((e) => e.horse?.name).filter(Boolean));
+    const evidenceRes = await fetchReportEvidenceMap(allHorseNames, getPythonApiUrl());
 
     for (const race of races) {
+      const raceIsoDate = race.raceDate.toISOString().slice(0, 10);
       const raceDateStr = race.raceDate.toLocaleDateString("en-GB", {
         day: "2-digit",
         month: "2-digit",
@@ -147,16 +154,10 @@ export async function GET(request) {
           ? startRating + recChange
           : (rating?.recommendedRating ?? startRating);
 
-        // Report Remarks
-        const reportRemarks = [
-          entry.starterRemark ? `[Starter] ${entry.starterRemark}` : null,
-          entry.veterinaryRemark ? `[Vet] ${entry.veterinaryRemark}` : null,
-          entry.incidentRemark
-            ? (entry.incidentRemark.startsWith("[Stipe]") ? entry.incidentRemark : `[Incidents] ${entry.incidentRemark}`)
-            : null,
-        ]
-          .filter(Boolean)
-          .join(" | ") || "None";
+        // Report Remarks (from Python /api/report-evidence)
+        const horseUpper = String(horse.name || "").trim().toUpperCase();
+        const pyEvents = evidenceRes.byHorse.get(horseUpper) || [];
+        const reportRemarks = formatReportRemarksForEntry(pyEvents, raceIsoDate).exception;
 
         // Justification
         let justification = "—";

@@ -153,6 +153,8 @@ function RatingEngineContent() {
   const [masterDataReady, setMasterDataReady] = useState(false);
   const [masterEntries, setMasterEntries] = useState(0);
   const [generatingRating, setGeneratingRating] = useState(false);
+  const [ratingsStale, setRatingsStale] = useState(false);
+  const [loadedReportSources, setLoadedReportSources] = useState([]);
 
   // Track uploaded files status in rating engine
   const [uploadedFilesState, setUploadedFilesState] = useState({
@@ -433,7 +435,7 @@ function RatingEngineContent() {
       setError(null);
 
       const res = await fetch(`/api/rating-engine/races?${params.toString()}`, {
-        cache: "default",
+        cache: "no-store",
       });
       if (!res.ok) {
         throw new Error("Failed to load race data from server");
@@ -465,6 +467,12 @@ function RatingEngineContent() {
       if (data.masterEntries !== undefined) {
         setMasterEntries(data.masterEntries);
       }
+      setRatingsStale(Boolean(data.ratingsStale));
+      setLoadedReportSources(
+        Array.isArray(data.loadedReportSources)
+          ? data.loadedReportSources
+          : data.patternInfo?.loadedReportSources || []
+      );
 
       // Initialize selected race: default to ALL when viewing all races
       if (data.races && data.races.length > 0) {
@@ -995,6 +1003,18 @@ function RatingEngineContent() {
           />
         </div>
       </div>
+
+      {/* Stale Ratings Notice */}
+      {ratingsStale && races.length > 0 && (
+        <div className="rounded-xl border border-amber-300 bg-amber-50 px-5 py-3.5 flex items-center justify-between gap-4 shadow-xs">
+          <div className="flex items-center gap-3 text-xs text-amber-900">
+            <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+            <span>
+              <strong>Ratings are out of date:</strong> A new Current Race or report file was uploaded after the last Generate Rating. Click <strong>Generate Rating</strong> to update recommendations before submitting.
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* 2. Filters & Race Selection Card */}
       <div className="bg-white rounded-xl border border-[#E2E8F0] shadow-[0_1px_2px_rgba(15,23,42,0.06)] p-6">
@@ -1612,11 +1632,22 @@ function RatingEngineContent() {
                   <div className="space-y-1.5 text-slate-700">
                     <div className="flex justify-between">
                       <span className="text-slate-500">Career Runs:</span>
-                      <span className="font-semibold text-slate-900">{activeHorse.previousRuns ?? 5} runs on record</span>
+                      <span className="font-semibold text-slate-900">
+                        {activeHorse.careerRuns != null
+                          ? `${activeHorse.careerRuns} runs on record`
+                          : `${activeHorse.previousRuns ?? 0} runs on record`}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Last Run Date:</span>
+                      <span className="font-semibold text-slate-900">
+                        {activeHorse.lastRunDate ? formatDisplayDate(activeHorse.lastRunDate) : "No prior run"}
+                      </span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-slate-500">Layoff & Form Notes:</span>
-                      <span className="font-semibold text-slate-900 max-w-[170px] truncate" title={parsed.numericalIndicators || "Standard schedule"}>
+                      <span className="font-semibold text-slate-900 max-w-[170px] truncate" title={`${activeHorse.layoffDays != null ? `${activeHorse.layoffDays} days · ` : ""}${parsed.numericalIndicators || "Standard schedule"}`}>
+                        {activeHorse.layoffDays != null ? `${activeHorse.layoffDays}d · ` : ""}
                         {parsed.numericalIndicators || "Standard schedule"}
                       </span>
                     </div>
@@ -1708,7 +1739,23 @@ function RatingEngineContent() {
                   <div className="space-y-1.5 text-slate-700">
                     <div className="flex justify-between">
                       <span className="text-slate-500">Reports Checked:</span>
-                      <span className="font-semibold text-slate-900">WET, Starter, Incident, Stipe</span>
+                      <span className="font-semibold text-slate-900">
+                        {loadedReportSources.length > 0
+                          ? loadedReportSources
+                              .map((s) =>
+                                s === "vet"
+                                  ? "Vet"
+                                  : s === "starter"
+                                  ? "Starter"
+                                  : s === "incident"
+                                  ? "Incident"
+                                  : s === "stewards"
+                                  ? "Stipe"
+                                  : s
+                              )
+                              .join(", ")
+                          : "None"}
+                      </span>
                     </div>
                     <div>
                       <span className="text-slate-500 block mb-0.5">Observations / Keywords:</span>
@@ -1755,13 +1802,18 @@ function RatingEngineContent() {
             <button
               type="button"
               onClick={() => handleSubmitRace(targetConfirmRaceId || currentRace?.id)}
-              disabled={isTargetRaceReviewed || submitting || races.length === 0}
-              className={`h-10 px-5 text-xs font-semibold rounded-lg shadow-sm transition-colors flex items-center gap-2 cursor-pointer ${
-                isTargetRaceReviewed
+              disabled={isTargetRaceReviewed || submitting || races.length === 0 || ratingsStale}
+              title={
+                ratingsStale
+                  ? "Ratings are out of date — click Generate Rating before submitting"
+                  : undefined
+              }
+              className={`h-10 px-5 text-xs font-semibold rounded-lg shadow-sm transition-colors flex items-center gap-2 ${
+                isTargetRaceReviewed || ratingsStale
                   ? "bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed"
                   : submitting
                   ? "bg-blue-400 text-white cursor-wait"
-                  : "bg-[#2563EB] hover:bg-[#1D4ED8] text-white"
+                  : "bg-[#2563EB] hover:bg-[#1D4ED8] text-white cursor-pointer"
               }`}
             >
               {submitting ? (
